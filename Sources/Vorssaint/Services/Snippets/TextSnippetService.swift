@@ -457,14 +457,23 @@ final class TextSnippetService {
                 post(event)
             }
         }
+        // Asked right before the backspaces go out, so the count covers a
+        // completion the field shows by then. Typing waits while the field
+        // answers, hence the short timeout; no answer counts as no completion.
+        func postDeletes() {
+            guard deleteCount > 0 else { return }
+            let selection = NSWorkspace.shared.frontmostApplication.flatMap {
+                SelectedTextReader.focusedTextSelection(processID: $0.processIdentifier, timeout: 0.15)
+            }
+            let count = TextSnippetSupport.triggerDeleteCount(deleteCount, focusedSelection: selection)
+            for _ in 0..<count { postKey(CGKeyCode(kVK_Delete)) }
+        }
 
         if TextSnippetSupport.requiresPaste(text) {
             let payload = TextSnippetSupport.pastePayload(text: text, trailingText: trailingText)
             return TransientPaste.shared.paste(
                 payload,
-                willPostShortcut: {
-                    for _ in 0..<deleteCount { postKey(CGKeyCode(kVK_Delete)) }
-                },
+                willPostShortcut: { postDeletes() },
                 didPostShortcut: { didExpand?() },
                 didFail: {
                     if let failureKeyCode { postKey(failureKeyCode, flags: failureFlags) }
@@ -472,7 +481,7 @@ final class TextSnippetService {
             )
         }
 
-        for _ in 0..<deleteCount { postKey(CGKeyCode(kVK_Delete)) }
+        postDeletes()
 
         // Typed injection instead of pasting: the clipboard stays untouched.
         // Keystroke events carry at most ~20 UTF-16 units reliably.

@@ -44,6 +44,36 @@ enum SelectedTextReader {
         return Selection(text: text, fromTextMarkers: true)
     }
 
+    /// Where the focused text in the app `processID` is selected, with that
+    /// text's length, both in the UTF-16 units Accessibility counts in. Nil
+    /// when nothing is selected or the app does not say. Blocking, and
+    /// `timeout` bounds each question asked of the app.
+    ///
+    /// Only the selection and the length are asked, never a role: a role query
+    /// switches a Chromium app's renderers into full accessibility mode for
+    /// the rest of its life (issue #953), and this is asked of whatever app
+    /// is in front.
+    static func focusedTextSelection(processID: pid_t,
+                                     timeout: Float) -> (range: NSRange, textLength: Int)? {
+        // This process answers from its main thread, so asking it from there
+        // would only wait out the timeout.
+        guard AXIsProcessTrusted(), processID != ProcessInfo.processInfo.processIdentifier
+        else { return nil }
+        let app = AXUIElementCreateApplication(processID)
+        AXUIElementSetMessagingTimeout(app, timeout)
+        guard let focused = copyElement(app, kAXFocusedUIElementAttribute),
+              !CFEqual(focused, app) else { return nil }
+        AXUIElementSetMessagingTimeout(focused, timeout)
+        var range = CFRange()
+        guard let rawRange = copyValue(focused, kAXSelectedTextRangeAttribute),
+              CFGetTypeID(rawRange) == AXValueGetTypeID(),
+              AXValueGetValue(rawRange as! AXValue, .cfRange, &range),
+              range.length > 0,
+              let length = copyValue(focused, kAXNumberOfCharactersAttribute) as? Int
+        else { return nil }
+        return (NSRange(location: range.location, length: range.length), length)
+    }
+
     // MARK: - Accessibility reading
 
     private static func copyElement(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {

@@ -166,6 +166,25 @@ enum TextSnippetSupport {
         text + trailingText.replacingOccurrences(of: "\r", with: "\n")
     }
 
+    /// The backspaces that clear `typed` characters of a trigger from the
+    /// focused text. A field that completes as you type shows the rest
+    /// selected after the caret: a browser's address bar turns "gitgra" into
+    /// "gitgra[ph]". The first backspace then removes only that selection, so
+    /// it takes one more, or the trigger keeps its first character (issue
+    /// #1377). Only a selection that starts after the trigger and runs to the
+    /// end of the text counts. A selection elsewhere is not where the
+    /// backspaces land: a terminal can keep one in its scrollback while you
+    /// type at the prompt.
+    static func triggerDeleteCount(_ typed: Int,
+                                   focusedSelection: (range: NSRange, textLength: Int)?) -> Int {
+        guard typed > 0, let focusedSelection else { return typed }
+        let range = focusedSelection.range
+        let completesTrigger = range.length > 0
+            && range.location >= typed
+            && NSMaxRange(range) == focusedSelection.textLength
+        return completesTrigger ? typed + 1 : typed
+    }
+
     static func expand(_ replacement: String,
                        date: Date,
                        clipboard: String?,

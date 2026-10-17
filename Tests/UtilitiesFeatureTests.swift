@@ -272,6 +272,30 @@ enum UtilitiesFeatureTests {
                 == "first\nsecond ",
                "multi-line snippets keep their delimiter in the same ordered paste")
 
+        // A browser's address bar completes "gitgra" to "gitgra[ph]" with the
+        // added part selected, and the first backspace only removes that
+        // selection (issue #1377).
+        suite.expect(TextSnippetSupport.triggerDeleteCount(6, focusedSelection: (NSRange(location: 6, length: 2), 8))
+                == 7,
+               "an inline completion after the trigger takes one more backspace")
+        suite.expect(TextSnippetSupport.triggerDeleteCount(6, focusedSelection: (NSRange(location: 16, length: 2), 18))
+                == 7,
+               "the completion counts with text typed before the trigger")
+        suite.expect(TextSnippetSupport.triggerDeleteCount(6, focusedSelection: nil) == 6,
+               "a field with nothing selected, or that does not say, keeps the count")
+        suite.expect(TextSnippetSupport.triggerDeleteCount(6, focusedSelection: (NSRange(location: 6, length: 0), 6))
+                == 6,
+               "a bare caret is not a selection")
+        suite.expect(TextSnippetSupport.triggerDeleteCount(4, focusedSelection: (NSRange(location: 6, length: 4), 31))
+                == 4,
+               "a selection short of the end, like a terminal's scrollback, is not where the backspaces land")
+        suite.expect(TextSnippetSupport.triggerDeleteCount(6, focusedSelection: (NSRange(location: 0, length: 8), 8))
+                == 6,
+               "a selection over the trigger itself is not a completion of it")
+        suite.expect(TextSnippetSupport.triggerDeleteCount(0, focusedSelection: (NSRange(location: 6, length: 2), 8))
+                == 0,
+               "an insertion with no trigger to clear never deletes")
+
         // Custom date patterns after a colon (issue #348)
         let enUS = Locale(identifier: "en_US")
         suite.expect(TextSnippetSupport.expand("{{date:yyyy-MM-dd}}", date: fixedDate, clipboard: nil,
