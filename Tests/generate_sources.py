@@ -70,6 +70,10 @@ def main():
                         "    private static func appendWindowlessApps(",
                         "    private static func switchableFrame(", "    private static func frameIsSwitchable(",
                         "    private static func frameLooksFullscreen("])
+          + "}\nextension SwitcherFullscreenScopeTests.Bridge {\n"
+          + "".join(declaration("Sources/Vorssaint/Services/Switcher/SpaceWindowBridge.swift", prefix)
+                    .replace("private ", "", 1) for prefix in [
+                        "    private static func windowTags(of", "    static func isExcludedFromWindowCycle("])
           + "}\n")
     write("RecorderSystemAudioTapLifecycle.swift", "import CoreAudio\nimport Foundation\n"
           + "extension RecorderSystemAudioTapLifecycleTests {\nfinal class Tap: Fixture, @unchecked Sendable {\n"

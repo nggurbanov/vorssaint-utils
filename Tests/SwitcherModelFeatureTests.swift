@@ -580,9 +580,9 @@ enum SwitcherModelFeatureTests {
                && !SpaceHopSupport.isOnFullscreenSpace(windowSpaces: [4], fullscreenSpaces: [8])
                && !SpaceHopSupport.isOnFullscreenSpace(windowSpaces: [], fullscreenSpaces: [8]),
                "App Switcher identifies fullscreen from Space type instead of window size")
-        suite.expect(SpaceHopSupport.isExcludedFromWindowCycle(windowTagsLow: 1 << 18),
+        suite.expect(SpaceHopSupport.isExcludedFromWindowCycle(windowTags: 1 << 18),
                "a window-server surface marked to ignore cycling is excluded from the switcher")
-        suite.expect(!SpaceHopSupport.isExcludedFromWindowCycle(windowTagsLow: (1 << 19) | (1 << 22)),
+        suite.expect(!SpaceHopSupport.isExcludedFromWindowCycle(windowTags: (1 << 19) | (1 << 22)),
                "other window-server tags do not hide a legitimate cross-Space window")
         // One probe window's tags on macOS 27.2: hidden along with its app,
         // closed by the app, and open.
@@ -592,6 +592,13 @@ enum SwitcherModelFeatureTests {
         suite.expect(!SpaceHopSupport.isHiddenWithApp(windowTags: windowTags([0, 9, 19, 22, 32, 45]))
                && !SpaceHopSupport.isHiddenWithApp(windowTags: windowTags([0, 9, 13, 19, 22, 32, 45])),
                "a window its app closed, or one still open, does not count as hidden along with the app")
+        // Tags of another app's windows on macOS 27.2: one that opts out of
+        // cycling, Safari's 517×132 auxiliary surface, and an ordinary window.
+        suite.expect(SpaceHopSupport.isExcludedFromWindowCycle(windowTags: windowTags([0, 9, 13, 18, 19, 22, 32, 45]))
+               && SpaceHopSupport.isExcludedFromWindowCycle(windowTags: windowTags([0, 18, 19, 30, 32])),
+               "the cycle flag reads from the full 64-bit tags of another app's surface")
+        suite.expect(!SpaceHopSupport.isExcludedFromWindowCycle(windowTags: windowTags([0, 9, 13, 19, 22, 32, 45])),
+               "an ordinary window's upper tag bits do not hide it")
         suite.expect(SpaceHopSupport.arrowSteps(orderedSpacesPerDisplay: [[3, 4, 5]],
                                           visibleSpaces: [3],
                                           target: 5) == 2,
@@ -1140,14 +1147,14 @@ enum SwitcherModelFeatureTests {
             bundleIdentifier: "com.example.editor",
             subrole: "AXUnknown"),
                "App Switcher keeps undescribed windows from unrelated apps filtered")
-        for tags: UInt32 in [786946, 795138] {
+        for tags: UInt64 in [786946, 795138] {
             suite.expect(!SwitcherSupport.isSwitchableNonstandardWindow(
                 role: "AXWindow",
                 subrole: "AXUnknown",
                 fillsScreen: false,
                 hasNormalWindowLevel: true,
                 acceptsUndescribedSubroles: false,
-                isExcludedFromWindowCycle: SpaceHopSupport.isExcludedFromWindowCycle(windowTagsLow: tags)),
+                isExcludedFromWindowCycle: SpaceHopSupport.isExcludedFromWindowCycle(windowTags: tags)),
                    "App Switcher excludes helper windows that opt out of window cycling")
         }
         suite.expect(SwitcherSupport.isSwitchableNonstandardWindow(

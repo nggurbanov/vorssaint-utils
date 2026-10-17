@@ -43,13 +43,53 @@ enum SwitcherFullscreenScopeTests {
         func dictionary(forKey key: String) -> [String: Any]? { values[key] as? [String: Any] }
     }
 
+    /// The production cycle-flag reader runs against this window query. The
+    /// hidden-with-app reader stays a stand-in, because its macOS 26 gate
+    /// would make the result depend on the Mac running the tests.
     enum Bridge {
         struct Topology {
             let visibleSpaces: Set<UInt64>
             let fullscreenSpaces: Set<UInt64>
         }
+        final class Answer {
+            let windows: [(id: CGWindowID, tags: UInt64)]
+            var index = -1
+            init(_ windows: [(id: CGWindowID, tags: UInt64)]) { self.windows = windows }
+        }
+        struct WindowQuery {
+            let query: (UInt32, CFArray, Int32) -> Unmanaged<CFTypeRef>?
+            let windows: (CFTypeRef) -> Unmanaged<CFTypeRef>?
+            let advance: (CFTypeRef) -> Bool
+            let windowID: (CFTypeRef) -> UInt32
+            let tags: (CFTypeRef) -> UInt64
+        }
+        /// Like macOS 27.2, the query answers for every app's windows and
+        /// skips windows that no longer exist.
+        static let windowServer = WindowQuery(
+            query: { _, ids, _ in
+                let asked = (ids as? [NSNumber] ?? []).map(\.uint32Value)
+                return Unmanaged.passRetained(Answer(asked.compactMap { id in
+                    windowServerTags[id].map { (id, $0) }
+                }) as AnyObject)
+            },
+            windows: { Unmanaged.passRetained($0) },
+            advance: { answer in
+                let answer = answer as! Answer
+                answer.index += 1
+                return answer.index < answer.windows.count
+            },
+            windowID: { answer in
+                let answer = answer as! Answer
+                return answer.windows[answer.index].id
+            },
+            tags: { answer in
+                let answer = answer as! Answer
+                return answer.windows[answer.index].tags
+            })
+        static let connection: UInt32 = 1
+        static var windowQuery: WindowQuery? = windowServer
+        static var windowServerTags: [CGWindowID: UInt64] = [:]
         static var memberships: [CGWindowID: [UInt64]] = [:]
-        static var excluded: Set<CGWindowID> = []
         static var orderedOut: Set<CGWindowID> = []
         static var hiddenWithApp: Set<CGWindowID>?
         static let canResolveSpaces = true
@@ -57,7 +97,6 @@ enum SwitcherFullscreenScopeTests {
             Topology(visibleSpaces: [1], fullscreenSpaces: [3])
         }
         static func spaces(of id: CGWindowID) -> [UInt64] { memberships[id] ?? [] }
-        static func isExcludedFromWindowCycle(_ id: CGWindowID) -> Bool { excluded.contains(id) }
         static func isWindowOrderedIn(_ id: CGWindowID) -> Bool? { !orderedOut.contains(id) }
         static func windowsHiddenWithApp(among windowIDs: [CGWindowID]) -> Set<CGWindowID>? {
             hiddenWithApp.map { $0.intersection(windowIDs) }
@@ -78,7 +117,8 @@ enum SwitcherFullscreenScopeTests {
             Enumerator.raw = []
             Enumerator.answers = [:]
             Bridge.memberships = [:]
-            Bridge.excluded = []
+            Bridge.windowServerTags = [:]
+            Bridge.windowQuery = Bridge.windowServer
             Bridge.orderedOut = []
             Bridge.hiddenWithApp = nil
             Preferences.standard.values = [:]
@@ -116,10 +156,11 @@ enum SwitcherFullscreenScopeTests {
         Enumerator.answers[3] = .init(ordered: [], byID: [:])
 
         func enumerate(currentSpaceOnly: Bool, showFullscreen: Bool = true, groupByApp: Bool = false,
-                       appRules: [String: SwitcherAppRule] = [:]) -> Enumerator.WindowList {
+                       appRules: [String: SwitcherAppRule] = [:],
+                       windowlessApps: String = "off") -> Enumerator.WindowList {
             Preferences.standard.values = [DefaultsKey.switcherCurrentSpaceOnly: currentSpaceOnly,
                                             DefaultsKey.switcherShowFullscreenWindows: showFullscreen,
-                                            DefaultsKey.switcherWindowlessApps: "off",
+                                            DefaultsKey.switcherWindowlessApps: windowlessApps,
                                             DefaultsKey.switcherAppRules: SwitcherAppRule.storedValue(appRules)]
             return Enumerator.enumerateSwitcherWindows(groupByApp: groupByApp,
                                                         preservingGroupedWindows: false, snapshot: snapshot)
@@ -152,13 +193,13 @@ enum SwitcherFullscreenScopeTests {
         Preferences.standard.values[DefaultsKey.switcherCurrentSpaceOnly] = true
         suite.expect(Enumerator.listWindowsForCommandBar(snapshot: snapshot).compactMap(\.windowID) == [1],
                      "Command Bar keeps its existing current-desktop scope")
-        Bridge.excluded = [3]
+        Bridge.windowServerTags = [3: 1 << 18]
         suite.expect(!enumerate(currentSpaceOnly: true).items.contains { $0.windowID == 3 },
                      "an unmatched cycle-excluded fullscreen helper stays out")
 
         // App 1 also plays a fullscreen video on another desktop. With one
         // entry per app, its window here must stay the entry to pick.
-        Bridge.excluded = []
+        Bridge.windowServerTags = [:]
         Bridge.memberships = [7: [1], 8: [3]]
         func browser(_ order: [CGWindowID], minimized: Bool = false) {
             Enumerator.raw = order.map { id -> [String: Any] in
@@ -234,5 +275,56 @@ enum SwitcherFullscreenScopeTests {
         Bridge.hiddenWithApp = nil
         suite.expect(Set(hiddenAppItems().compactMap(\.windowID)) == [30, 31, 32, 33, 34],
                      "without the window server's answer a hidden app keeps every surface on a desktop, as before")
+
+        // MARK: Another app's surface kept out of window cycling
+
+        // A browser window here (40) and its untitled auxiliary surface (41),
+        // parked on another desktop and still ordered in. Accessibility does
+        // not describe the surface, and the window server tags it like
+        // Safari's 517×132 surface on macOS 27.2.
+        func windowTags(_ bits: [UInt64]) -> UInt64 { bits.reduce(0) { $0 | 1 << $1 } }
+        let browserWindow = Enumerator.AccessibilityWindowSnapshot(
+            title: "Window 40", frame: windowFrame, isMinimized: false, isFullscreen: false, isNativeFullscreen: false)
+        func surfaceBeside(_ windowIDs: [CGWindowID], described: [CGWindowID], unanswered: Set<CGWindowID> = []) {
+            Enumerator.raw = windowIDs.map { id -> [String: Any] in
+                var info: [String: Any] = [kCGWindowNumber as String: NSNumber(value: id),
+                                           kCGWindowOwnerPID as String: NSNumber(value: 1),
+                                           kCGWindowLayer as String: NSNumber(value: 0),
+                                           kCGWindowBounds as String: id == 40
+                                               ? ["X": 0, "Y": 0, "Width": 600, "Height": 400]
+                                               : ["X": 0, "Y": 0, "Width": 517, "Height": 132],
+                                           kCGWindowIsOnscreen as String: NSNumber(value: id == 40),
+                                           kCGWindowAlpha as String: NSNumber(value: 1)]
+                if id == 40 { info[kCGWindowName as String] = "Window 40" }
+                return info
+            }
+            let windows = described.map { (id: $0, snapshot: browserWindow) }
+            Enumerator.answers = [1: .init(ordered: windows,
+                                           byID: Dictionary(uniqueKeysWithValues: windows.map { ($0.id, $0.snapshot) }),
+                                           unansweredIDs: unanswered)]
+        }
+        func listed(windowlessApps: String = "off") -> [SwitcherItem] {
+            enumerate(currentSpaceOnly: false, windowlessApps: windowlessApps).items
+        }
+        Bridge.memberships = [40: [1], 41: [2]]
+        Bridge.windowServerTags = [40: windowTags([0, 9, 13, 19, 22, 32, 45]), 41: windowTags([0, 18, 19, 30, 32])]
+        surfaceBeside([40, 41], described: [40])
+        suite.expect(listed().compactMap(\.windowID) == [40],
+                     "another app's surface kept out of window cycling stays out of the switcher")
+        surfaceBeside([40, 41], described: [40], unanswered: [41])
+        suite.expect(listed().compactMap(\.windowID) == [40],
+                     "the surface stays out when its Accessibility read times out")
+        surfaceBeside([41], described: [], unanswered: [41])
+        let busy = listed(windowlessApps: "all")
+        suite.expect(busy.count == 1 && busy[0].windowID == nil && busy[0].pid == 1,
+                     "a busy app whose only timed-out window is that surface keeps its app entry")
+        surfaceBeside([40, 41], described: [40])
+        Bridge.windowServerTags[41] = windowTags([0, 19, 30, 32])
+        suite.expect(listed().compactMap(\.windowID) == [40, 41],
+                     "the same surface without the flag is listed as a window on another desktop")
+        Bridge.windowServerTags[41] = windowTags([0, 18, 19, 30, 32])
+        Bridge.windowQuery = nil
+        suite.expect(listed().compactMap(\.windowID) == [40, 41],
+                     "without the window query the surface is not hidden on a guess")
     }
 }

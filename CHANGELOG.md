@@ -74,6 +74,7 @@ After updating, What's New shows the changes for the features you use. The windo
 - The mixer treats Studio Pro 8 as a DAW, like Studio One, and leaves its audio routing alone.
 - The window switcher lists apps that macOS reports without a process ID, such as Xcode's Device Hub, with their windows instead of an empty entry.
 - Closed windows and blank entries no longer come back in the window switcher and Dock Preview when their app is hidden.
+- On macOS 27, hidden helper windows that apps keep out of window cycling no longer show up as blank entries in the window switcher, Dock Preview and Command Bar.
 - With the capture controls in Dynamic Island and the screen not frozen, a selection drag that starts on the desktop draws a selection.
 
 ### Contributors

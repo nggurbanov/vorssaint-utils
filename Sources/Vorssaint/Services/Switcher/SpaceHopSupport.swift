@@ -72,9 +72,9 @@ enum SpaceHopSupport {
     /// The window server marks surfaces that must stay out of app window
     /// cycling. This remains meaningful when Accessibility cannot inspect a
     /// window because it lives on another Space.
-    static func isExcludedFromWindowCycle(windowTagsLow: UInt32) -> Bool {
-        let ignoresCycleTag: UInt32 = 1 << 18
-        return windowTagsLow & ignoresCycleTag != 0
+    static func isExcludedFromWindowCycle(windowTags: UInt64) -> Bool {
+        let ignoresCycleTag: UInt64 = 1 << 18
+        return windowTags & ignoresCycleTag != 0
     }
 
     /// Hiding an app tags each window it takes off screen. A window the app

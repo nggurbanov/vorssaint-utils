@@ -29,13 +29,6 @@ enum SpaceWindowBridge {
         return unsafeBitCast(symbol, to: Function.self)()
     }()
 
-    private typealias GetWindowTagsFunction =
-        @convention(c) (ConnectionID, CGWindowID, UnsafeMutablePointer<UInt32>, Int) -> CGError
-    private static let getWindowTags: GetWindowTagsFunction? = {
-        guard let symbol = symbol("CGSGetWindowTags") else { return nil }
-        return unsafeBitCast(symbol, to: GetWindowTagsFunction.self)
-    }()
-
     private typealias WindowIsOrderedInFunction =
         @convention(c) (ConnectionID, CGWindowID, UnsafeMutablePointer<UInt8>) -> CGError
     private static let windowIsOrderedIn: WindowIsOrderedInFunction? = {
@@ -215,21 +208,7 @@ enum SpaceWindowBridge {
                                                      visibleSpaces: visible)
     }
 
-    /// False when the private query is unavailable, preserving the existing
-    /// cross-Space behavior instead of hiding a legitimate window on a guess.
-    static func isExcludedFromWindowCycle(_ windowID: CGWindowID) -> Bool {
-        guard connection != 0, let getWindowTags else { return false }
-        var tags = [UInt32](repeating: 0, count: 2)
-        return tags.withUnsafeMutableBufferPointer { buffer in
-            guard let base = buffer.baseAddress,
-                  getWindowTags(connection, windowID, base,
-                                MemoryLayout<UnsafeRawPointer>.size * 8) == .success
-            else { return false }
-            return SpaceHopSupport.isExcludedFromWindowCycle(windowTagsLow: buffer[0])
-        }
-    }
-
-    // MARK: - Windows hidden along with their app
+    // MARK: - Window tags
 
     private typealias WindowQueryFunction =
         @convention(c) (ConnectionID, CFArray, Int32) -> Unmanaged<CFTypeRef>?
@@ -260,26 +239,39 @@ enum SpaceWindowBridge {
                            tags: unsafeBitCast(tags, to: IteratorTagsFunction.self))
     }()
 
-    /// The windows among `windowIDs` that the window server hid along with
-    /// their app. On macOS 27 `CGSGetWindowTags` reads zeros for any window
-    /// of another app, so the tags come from one batched window query, which
-    /// still answers for every app. Nil when that query is missing, and
-    /// before macOS 26, where the tag has not been observed, so callers keep
-    /// their earlier behavior.
-    static func windowsHiddenWithApp(among windowIDs: [CGWindowID]) -> Set<CGWindowID>? {
-        guard #available(macOS 26.0, *), connection != 0, let windowQuery else { return nil }
-        guard !windowIDs.isEmpty else { return [] }
+    /// The window server's tags for each window among `windowIDs` that still
+    /// exists. On macOS 27 `CGSGetWindowTags` reads zeros for any window of
+    /// another app, so the tags come from one batched window query, which
+    /// still answers for every app. Nil when that query is missing.
+    private static func windowTags(of windowIDs: [CGWindowID]) -> [CGWindowID: UInt64]? {
+        guard connection != 0, let windowQuery else { return nil }
+        // An empty list would answer with unrelated windows.
+        guard !windowIDs.isEmpty else { return [:] }
         guard let query = windowQuery.query(connection, windowIDs.map { NSNumber(value: $0) } as CFArray,
                                             Int32(clamping: windowIDs.count))?.takeRetainedValue(),
               let iterator = windowQuery.windows(query)?.takeRetainedValue()
         else { return nil }
-        var hidden = Set<CGWindowID>()
+        var tags: [CGWindowID: UInt64] = [:]
         while windowQuery.advance(iterator) {
-            if SpaceHopSupport.isHiddenWithApp(windowTags: windowQuery.tags(iterator)) {
-                hidden.insert(windowQuery.windowID(iterator))
-            }
+            tags[windowQuery.windowID(iterator)] = windowQuery.tags(iterator)
         }
-        return hidden
+        return tags
+    }
+
+    /// False when the window server cannot answer, preserving the existing
+    /// cross-Space behavior instead of hiding a legitimate window on a guess.
+    static func isExcludedFromWindowCycle(_ windowID: CGWindowID) -> Bool {
+        guard let tags = windowTags(of: [windowID])?[windowID] else { return false }
+        return SpaceHopSupport.isExcludedFromWindowCycle(windowTags: tags)
+    }
+
+    /// The windows among `windowIDs` that the window server hid along with
+    /// their app. Nil when the window query is missing, and before macOS 26,
+    /// where the tag has not been observed, so callers keep their earlier
+    /// behavior.
+    static func windowsHiddenWithApp(among windowIDs: [CGWindowID]) -> Set<CGWindowID>? {
+        guard #available(macOS 26.0, *), let tags = windowTags(of: windowIDs) else { return nil }
+        return Set(tags.filter { SpaceHopSupport.isHiddenWithApp(windowTags: $0.value) }.keys)
     }
 
     // MARK: - Fronting a specific window
