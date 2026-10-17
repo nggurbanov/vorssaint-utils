@@ -96,6 +96,17 @@ struct AgentUsageRecord: Equatable {
     }
 }
 
+/// A named project supplied by a session manager, keyed by provider and native
+/// session ID. Its identity stays stable when the user renames the project.
+struct AgentProjectIdentity: Equatable {
+    let id: String
+    let name: String
+
+    static func sessionKey(provider: AgentProvider, session: String) -> String {
+        provider.rawValue + ":" + session
+    }
+}
+
 /// A usage allowance and how much of it is spent, as the provider reports it.
 struct AgentLimitWindow: Equatable, Identifiable {
     enum Kind: String {

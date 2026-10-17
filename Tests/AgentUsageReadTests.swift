@@ -68,6 +68,7 @@ enum AgentUsageReadTests {
         var readerCancellation: Cancellation? = Cancellation()
         var cursors: [String: AgentLogCursor] = [:]
         var store = AgentUsageStore()
+        var t3Metadata = T3LocalMetadata()
         var enabled: Set<AgentProvider> = []
         var previousLimits: [AgentProvider: AgentLimits] = [:]
         var budgetDay: Date?

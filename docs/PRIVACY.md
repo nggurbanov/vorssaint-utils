@@ -99,13 +99,22 @@ If anything here is unclear, open a question in [GitHub issues](https://github.c
 
 ## Optional T3 Code integration in this fork
 
+While AI Agents is on, its local usage reader can read T3's project/conversation
+titles and strong native session references from `~/.t3/userdata/statev2.sqlite`.
+It opens the database read-only and selects metadata projection tables only;
+it does not read T3 credentials or transcript content. These names stay in memory
+and relabel existing local usage without importing or duplicating it.
+
 AI Agents can connect directly to T3 Code environments you pair. Only read-only
 orchestration grants are accepted; tokens are stored in device-only Keychain
 items, while endpoint/environment metadata is kept in device-local preferences
 and excluded from settings export. Polling stops when the section is disabled.
 
-The thread-summary endpoint can include a latest message preview. This integration
-ignores it and does not persist prompts, replies, tool output or files. It retains
+The thread-summary endpoint can include a message preview, and thread projections
+used for token estimates can include conversation text and tool output. T3 has no
+counters-only projection; those fields cross the wire but the thin decoders ignore
+them and never persist them. Token counters and derived API-value estimates stay
+in memory, with native logs taking precedence over overlapping T3 usage. It retains
 thread titles, project/environment labels, provider/model names, state and timing
 in memory for display. Paired servers receive the requests and ordinary network
 metadata. See [T3 integration](T3-INTEGRATION.md) for behavior and limitations.

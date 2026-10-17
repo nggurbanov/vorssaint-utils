@@ -195,7 +195,7 @@ struct T3ShellSnapshot: Decodable {
         }
     }
 
-    private static func date(_ value: String) -> Date? {
+    static func date(_ value: String) -> Date? {
         ISO8601DateFormatter.t3Fractional.date(from: value) ?? ISO8601DateFormatter.t3.date(from: value)
     }
 }

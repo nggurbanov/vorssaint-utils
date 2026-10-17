@@ -1,5 +1,36 @@
 # T3 integration acceptance — 17 October 2026
 
+## Token usage and T3 names follow-up
+
+Verified the real read-only HTTP thread projection on dev-01: a sampled Codex
+conversation supplied 19 provider turns and 19 usable billed-token records.
+The native Swift client passed 7 live acceptance checks, including Keychain
+round-trip, shell decoding, per-turn decoding, project titles and native IDs.
+No additional scope, remote companion or T3 source changes were needed.
+
+On the same Mac and notch layout described below, paired a temporary local
+gateway forwarding real dev-01 descriptor, OAuth, shell and full thread reads.
+The gateway substituted privately held bootstrap tokens for a harmless UI marker;
+no actual credentials were typed into the automation transcript. This used real
+remote token data, not lifecycle fixtures. The native island visibly populated
+spending/API-value, model/project breakdowns, trends and activity history.
+Changed the period to 30 days and verified the remote project titles and history;
+unknown pricing displayed a lower-bound API value and token-based breakdowns.
+Local live sessions visibly used T3 conversation titles instead of scratch slugs.
+
+Restored the reporting period to Today, removed the test connection through
+Settings, verified an empty Developer T3 Keychain namespace, revoked both owned
+environment sessions and verified zero remain active. Closed both temporary
+ports and removed owned bootstrap/gateway files. No agent was launched and no
+existing T3 thread or project was modified.
+
+Unit/contract checks cover disjoint cache accounting, reasoning tokens, pricing,
+native-log precedence, repeated-turn deduplication, source/provider isolation,
+project attribution and renaming, missing/invalid counters and the actual
+production completion-notice reader. Native build and selftest passed. The
+archive/subagent/midnight limitations in [T3 integration](T3-INTEGRATION.md)
+remain explicit; this is not complete transcript-level billing history.
+
 Test host: Apple Silicon Mac `Mac16,12`, macOS **27.0.1**. Native developer
 build, real notch layout; official Vorssaint was closed before testing and was
 not replaced. The Developer app uses `com.vorssaint.utils.dev`.

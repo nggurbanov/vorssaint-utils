@@ -236,6 +236,33 @@ struct T3CodeClient {
         return snapshot
     }
 
+    func fetchUsageThread(endpoint: URL, token: String, threadID: String) async throws -> T3UsageThreadSnapshot {
+        guard threadID != ".", threadID != ".." else { throw T3CodeConnectionError.invalidResponse }
+        var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/%?#")
+        guard let identifier = threadID.addingPercentEncoding(withAllowedCharacters: allowed), !identifier.isEmpty else {
+            throw T3CodeConnectionError.invalidResponse
+        }
+        components.percentEncodedPath = "/api/orchestration/threads/" + identifier
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("2", forHTTPHeaderField: "x-t3-orchestration-protocol")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 15
+        let (data, response) = try await transport.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw T3CodeConnectionError.serverUnavailable }
+        if http.statusCode == 401 { throw T3CodeConnectionError.authenticationExpired }
+        if http.statusCode == 403 { throw T3CodeConnectionError.readPermissionMissing }
+        if http.statusCode == 429 || (500...599).contains(http.statusCode) {
+            throw T3CodeConnectionError.serverUnavailable
+        }
+        guard http.statusCode == 200, data.count <= 32 << 20,
+              let snapshot = try? JSONDecoder().decode(T3UsageThreadSnapshot.self, from: data),
+              snapshot.projection.thread.id == threadID else { throw T3CodeConnectionError.invalidResponse }
+        return snapshot
+    }
+
     private static func formEncode(_ value: String) -> String {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-._~")
@@ -401,6 +428,7 @@ final class T3CodeActivityService: ObservableObject {
     @Published private(set) var activities: [T3ThreadActivity] = []
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var connectionStatuses: [T3ConnectionStatus] = []
+    @Published private(set) var usageReport = T3UsageReport()
     let completed = PassthroughSubject<T3ActivityCompletion, Never>()
 
     private let client: T3CodeClient
@@ -413,6 +441,15 @@ final class T3CodeActivityService: ObservableObject {
     private var runtimeStates: [String: T3CodeConnectionState] = [:]
     private var errorsByConnection: [String: T3CodeConnectionError] = [:]
     private var tokens: [String: String] = [:]
+    private struct UsageThreadCache {
+        let updatedAt: String
+        let projectID: String
+        var report: T3UsageReport
+    }
+    private var usageTasks: [String: Task<Void, Never>] = [:]
+    private var usageShells: [String: T3ShellSnapshot] = [:]
+    private var usageCache: [String: [String: UsageThreadCache]] = [:]
+    private var usageReports: [String: T3UsageReport] = [:]
     private let activityExpiryController = T3ActivityExpiryController()
     private var pairingInProgress = false
     private var pairingGeneration = UUID()
@@ -612,6 +649,7 @@ final class T3CodeActivityService: ObservableObject {
             while !Task.isCancelled, generation == self.generations[id] {
                 do {
                     guard connection.expiresAt > Date() else {
+                        self.clearUsage(connectionID: id)
                         self.runtimeStates[id] = .needsPairing
                         self.errorsByConnection[id] = nil
                         self.tokens[id] = nil
@@ -625,6 +663,8 @@ final class T3CodeActivityService: ObservableObject {
                         expectedEnvironmentID: verifyIdentity ? identity.id : nil)
                     guard !Task.isCancelled, generation == self.generations[id] else { return }
                     let next = snapshot.activities(environment: identity)
+                    self.usageShells[id] = snapshot
+                    self.startUsagePolling(connection, token: token, generation: generation)
                     var reducer = self.reducers[id] ?? T3ActivityReducer()
                     let completions = reducer.apply(next)
                     self.reducers[id] = reducer
@@ -641,6 +681,7 @@ final class T3CodeActivityService: ObservableObject {
                 } catch let error as T3CodeConnectionError {
                     guard !Task.isCancelled, generation == self.generations[id] else { return }
                     if error == .authenticationExpired || error == .readPermissionMissing {
+                        self.clearUsage(connectionID: id)
                         self.clearActivity(connectionID: id)
                         self.tokens[id] = nil
                         self.runtimeStates[id] = .needsPairing
@@ -674,6 +715,7 @@ final class T3CodeActivityService: ObservableObject {
         generations[connectionID] = UUID()
         tasks[connectionID]?.cancel()
         tasks[connectionID] = nil
+        clearUsage(connectionID: connectionID)
         activityExpiryController.cancel(connectionID: connectionID, clearLastSuccess: clearActivity)
         tokens[connectionID] = nil
         runtimeStates[connectionID] = nil
@@ -696,6 +738,78 @@ final class T3CodeActivityService: ObservableObject {
         publishAggregate()
     }
 
+    /// Usage history never blocks the three-second activity loop. Only changed
+    /// threads are re-read, at most once per thirty seconds, on the same origin
+    /// and with the same read-only credential as the validated shell.
+    @MainActor private func startUsagePolling(_ connection: T3ConfiguredConnection, token: String, generation: UUID) {
+        let id = connection.id
+        guard usageTasks[id] == nil, let endpoint = try? client.validateEndpoint(connection.endpoint) else { return }
+        usageTasks[id] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled, self.generations[id] == generation {
+                guard let shell = self.usageShells[id] else { return }
+                let titles = Dictionary(shell.projects.map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
+                let since = Date().addingTimeInterval(-TimeInterval(AgentUsageSnapshot.dayCount) * 86_400)
+                let threads = (shell.threads + shell.archivedThreads).filter {
+                    (T3ShellSnapshot.date($0.updatedAt) ?? .distantPast) >= since
+                }.sorted { $0.updatedAt > $1.updatedAt }
+                var pending = threads.filter { self.usageCache[id]?[$0.id]?.updatedAt != $0.updatedAt }.count
+                self.publishUsage(connectionID: id, pending: pending, projectTitles: titles)
+                for thread in threads {
+                    guard !Task.isCancelled, self.generations[id] == generation else { return }
+                    guard self.runtimeStates[id] == .connected else { break }
+                    if self.usageCache[id]?[thread.id]?.updatedAt == thread.updatedAt { continue }
+                    do {
+                        let snapshot = try await self.client.fetchUsageThread(endpoint: endpoint, token: token, threadID: thread.id)
+                        guard !Task.isCancelled, self.generations[id] == generation else { return }
+                        guard snapshot.projection.thread.projectId == thread.projectID else { continue }
+                        let report = snapshot.report(environmentID: connection.environmentID,
+                            projectTitle: titles[thread.projectID] ?? "")
+                        self.usageCache[id, default: [:]][thread.id] = UsageThreadCache(
+                            updatedAt: thread.updatedAt, projectID: thread.projectID, report: report)
+                        pending -= 1
+                    } catch {
+                        guard !Task.isCancelled, self.generations[id] == generation else { return }
+                        if error as? T3CodeConnectionError == .authenticationExpired
+                            || error as? T3CodeConnectionError == .readPermissionMissing {
+                            self.clearUsage(connectionID: id)
+                            return
+                        }
+                    }
+                }
+                self.publishUsage(connectionID: id, pending: pending, projectTitles: titles)
+                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            }
+        }
+    }
+
+    private func publishUsage(connectionID: String, pending: Int, projectTitles: [String: String]) {
+        // Retain already observed history if a thread is later archived. The
+        // server's active shell does not enumerate older archived threads.
+        let reports = (usageCache[connectionID] ?? [:]).sorted { $0.key < $1.key }.map { _, cache in
+            var report = cache.report
+            report.samples.removeAll { $0.date < Date().addingTimeInterval(-TimeInterval(AgentUsageSnapshot.dayCount) * 86_400) }
+            if let title = projectTitles[cache.projectID] {
+                for i in report.samples.indices { report.samples[i].project = AgentProjectIdentity(id: report.samples[i].project.id, name: title) }
+            }
+            return report
+        }
+        var report = T3UsageReport.merge(reports)
+        report.pendingThreads = pending
+        usageReports[connectionID] = report
+        let aggregate = T3UsageReport.merge(usageReports.sorted { $0.key < $1.key }.map(\.value))
+        if usageReport != aggregate { usageReport = aggregate }
+    }
+
+    private func clearUsage(connectionID: String) {
+        usageTasks[connectionID]?.cancel()
+        usageTasks[connectionID] = nil
+        usageShells[connectionID] = nil
+        usageCache[connectionID] = nil
+        usageReports[connectionID] = nil
+        usageReport = T3UsageReport.merge(usageReports.sorted { $0.key < $1.key }.map(\.value))
+    }
+
     private func clearActivityAfterTransientFailure(connectionID: String, generation: UUID, now: Date = .now) {
         activityExpiryController.expireAfterTransientFailure(connectionID: connectionID, now: now,
             isGenerationCurrent: { [weak self] in self?.generations[connectionID] == generation },
@@ -703,6 +817,7 @@ final class T3CodeActivityService: ObservableObject {
     }
 
     private func clearAllActivities() {
+        for id in Array(usageTasks.keys) { clearUsage(connectionID: id) }
         activitiesByConnection.removeAll()
         reducers.removeAll()
         activityExpiryController.cancelAll()

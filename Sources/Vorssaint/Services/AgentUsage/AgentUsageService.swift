@@ -91,6 +91,10 @@ final class AgentUsageService: ObservableObject {
     private var publishScheduled = false
     /// The last snapshot handed over, to tell when time alone changes it.
     private var published = AgentUsageSnapshot()
+    private var t3Metadata = T3LocalMetadata()
+    private var t3MetadataChecked = Date.distantPast
+    private var t3Usage = T3UsageReport()
+    private var t3UsageObservation: AnyCancellable?
     private var claudePlan: AgentPlan?
     /// The organization Claude Code signs in to, when its profile says.
     private var claudeOrganization: String?
@@ -110,7 +114,16 @@ final class AgentUsageService: ObservableObject {
     private var savedMark: Int?
     private var lastSave = Date.distantPast
 
-    private init() {}
+    private init() {
+        t3UsageObservation = T3CodeActivityService.shared.$usageReport.sink { [weak self] report in
+            self?.queue.async { [weak self] in
+                guard let self else { return }
+                self.t3Usage = report
+                guard self.readerSession >= 0 else { return }
+                self.schedulePublish()
+            }
+        }
+    }
 
     func syncWithPreferences() {
         CodexProfileLimitsService.shared.synchronize()
@@ -200,6 +213,9 @@ final class AgentUsageService: ObservableObject {
             store = AgentUsageStore()
             cursors.removeAll()
             published = AgentUsageSnapshot()
+            t3Metadata = T3LocalMetadata()
+            t3MetadataChecked = .distantPast
+            t3Usage = T3UsageReport()
             previousLimits.removeAll()
             warned.removeAll()
             budgetDay = nil
@@ -481,7 +497,12 @@ final class AgentUsageService: ObservableObject {
                 : cursor.parent ?? cursor.codexParent(among: cursors)
             let finished = store.apply(entries, file: turnFile, provider: provider, tracksTurns: tracksTurns,
                                        parent: parent, modified: cursor.modified, now: now)
-            finished.forEach(report)
+            for event in finished {
+                if case .finished(let provider, let duration, let cost, let tokens, _) = event,
+                   let title = t3Metadata.liveTitle(provider: provider, nativeID: cursor.state.session) {
+                    report(.finished(provider: provider, duration: duration, cost: cost, tokens: tokens, project: title))
+                } else { report(event) }
+            }
         }
         if provider.reader.readsFullHistoryFirst && cursor.offset == 0 {
             AgentLogReader.readCopilotHistory(cursor, shouldContinue: { !cancellation.isCancelled }, line: consume)
@@ -549,7 +570,8 @@ final class AgentUsageService: ObservableObject {
             store.dropRecords(before: now.addingTimeInterval(-Self.horizon))
             // A log kept open through a long pause reports nothing when work
             // resumes; the day's logs are looked at less often than recent ones.
-            var changed = pollOpenLogs(within: 86_400)
+            var changed = refreshT3Metadata(now: now)
+            if pollOpenLogs(within: 86_400) { changed = true }
             // A folder that appears later, like a first Codex session, is
             // picked up without a restart.
             if now.timeIntervalSince(lastRootCheck) > 300 {
@@ -598,7 +620,26 @@ final class AgentUsageService: ObservableObject {
         var plans: [AgentProvider: AgentPlan] = [:]
         if let claudePlan { plans[.claude] = claudePlan }
         if let codex = AgentPlans.codex(planType: store.codexPlan) { plans[.codex] = codex }
-        let next = store.snapshot(plans: plans, providers: enabled, now: Date())
+        _ = refreshT3Metadata(now: Date())
+        var next = store.snapshot(plans: plans, providers: enabled, now: Date(),
+                                  projectsBySession: t3Metadata.projectsBySession)
+        next.live = next.live.map { live in
+            var live = live
+            let nativeID: String
+            if live.provider == .opencode, let separator = live.id.lastIndex(of: "#") {
+                nativeID = String(live.id[live.id.index(after: separator)...])
+            } else {
+                nativeID = cursors[live.id]?.state.session ?? ""
+            }
+            if let title = t3Metadata.liveTitle(provider: live.provider, nativeID: nativeID) { live.project = title }
+            return live
+        }
+        if !t3Usage.samples.isEmpty {
+            let nativeSessions = Set(store.records.map {
+                AgentProjectIdentity.sessionKey(provider: $0.provider, session: $0.session)
+            })
+            next = t3Usage.adding(to: next, localSessions: nativeSessions, providers: enabled)
+        }
         published = next
         checkBudget(next)
         let checked = enabled.contains(.claude) ? claudeAppSamples.last(where: {
@@ -612,6 +653,17 @@ final class AgentUsageService: ObservableObject {
             if self.pricesUpdated != prices { self.pricesUpdated = prices }
             if self.snapshot != next { self.snapshot = next }
         }
+    }
+
+    /// Runs with the usage reader, even without a paired remote environment.
+    /// Rejoins titles periodically so renames also update cached historical cards.
+    private func refreshT3Metadata(now: Date) -> Bool {
+        guard now.timeIntervalSince(t3MetadataChecked) >= 5 else { return false }
+        t3MetadataChecked = now
+        let next = T3LocalMetadata.read(home: home)
+        guard next != t3Metadata else { return false }
+        t3Metadata = next
+        return true
     }
 
     // MARK: Alerts

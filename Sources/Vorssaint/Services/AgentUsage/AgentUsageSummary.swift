@@ -115,7 +115,8 @@ enum AgentUsageSummary {
     static func snapshot(records: [AgentUsageRecord], limits: [AgentProvider: AgentLimits],
                          live: [AgentLiveSession], plans: [AgentProvider: AgentPlan],
                          providers: Set<AgentProvider>, now: Date,
-                         calendar: Calendar = .autoupdatingCurrent) -> AgentUsageSnapshot {
+                         calendar: Calendar = .autoupdatingCurrent,
+                         projectsBySession: [String: AgentProjectIdentity] = [:]) -> AgentUsageSnapshot {
         var snapshot = AgentUsageSnapshot(loaded: true, now: now)
         snapshot.limits = limits.filter { providers.contains($0.key) }
         snapshot.plans = plans.filter { providers.contains($0.key) }
@@ -169,9 +170,11 @@ enum AgentUsageSummary {
                 models[period, default: [:]][modelID, default: AgentShare(
                     id: modelID, name: name.isEmpty ? "?" : name, provider: record.provider, totals: AgentTotals())]
                     .totals.add(record)
-                if !record.project.isEmpty {
-                    projects[period, default: [:]][record.project, default: AgentShare(
-                        id: record.project, name: record.project, provider: nil, totals: AgentTotals())]
+                let project = projectsBySession[AgentProjectIdentity.sessionKey(provider: record.provider, session: record.session)]
+                    ?? AgentProjectIdentity(id: record.project, name: record.project)
+                if !project.name.isEmpty {
+                    projects[period, default: [:]][project.id, default: AgentShare(
+                        id: project.id, name: project.name, provider: nil, totals: AgentTotals())]
                         .totals.add(record)
                 }
             }
@@ -257,6 +260,7 @@ final class AgentUsageSummaryCache {
     private var history: AgentUsageSnapshot?
     private var calendar: Calendar?
     private var providers: Set<AgentProvider> = []
+    private var projectsBySession: [String: AgentProjectIdentity] = [:]
     private var models: [AgentPeriod: [String: AgentShare]] = [:]
     private var projects: [AgentPeriod: [String: AgentShare]] = [:]
     private var names: [String: String] = [:]
@@ -286,13 +290,16 @@ final class AgentUsageSummaryCache {
     func snapshot(records: [AgentUsageRecord], limits: [AgentProvider: AgentLimits],
                   live: [AgentLiveSession], plans: [AgentProvider: AgentPlan],
                   providers: Set<AgentProvider>, now: Date,
-                  calendar: Calendar = .current) -> AgentUsageSnapshot {
+                  calendar: Calendar = .current,
+                  projectsBySession: [String: AgentProjectIdentity] = [:]) -> AgentUsageSnapshot {
         accumulatedRecords = 0
         let rebuild = history == nil || self.calendar != calendar || self.providers != providers
+            || self.projectsBySession != projectsBySession
             || now < lastTime || !calendar.isDate(lastTime, inSameDayAs: now)
         if rebuild {
             self.calendar = calendar
             self.providers = providers
+            self.projectsBySession = projectsBySession
             models.removeAll(keepingCapacity: true)
             projects.removeAll(keepingCapacity: true)
             names.removeAll(keepingCapacity: true)
@@ -389,9 +396,11 @@ final class AgentUsageSummaryCache {
             history!.periods[period]!.byProvider[record.provider, default: AgentTotals()] += delta
             models[period, default: [:]][modelID, default: AgentShare(
                 id: modelID, name: name.isEmpty ? "?" : name, provider: record.provider, totals: AgentTotals())].totals += delta
-            if !record.project.isEmpty {
-                projects[period, default: [:]][record.project, default: AgentShare(
-                    id: record.project, name: record.project, provider: nil, totals: AgentTotals())].totals += delta
+            let project = projectsBySession[AgentProjectIdentity.sessionKey(provider: record.provider, session: record.session)]
+                ?? AgentProjectIdentity(id: record.project, name: record.project)
+            if !project.name.isEmpty {
+                projects[period, default: [:]][project.id, default: AgentShare(
+                    id: project.id, name: project.name, provider: nil, totals: AgentTotals())].totals += delta
             }
         }
     }

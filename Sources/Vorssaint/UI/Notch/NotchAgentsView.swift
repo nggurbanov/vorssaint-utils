@@ -118,6 +118,11 @@ struct NotchAgentsView: View {
             HStack(spacing: 5) {
                 Image(systemName: "circle.hexagongrid.fill").font(.system(size: 10))
                 Text(T3CodeStrings(l10n.language).source).font(.system(size: 10, weight: .semibold))
+                let incomplete = t3.usageReport.pendingThreads + t3.usageReport.missingTurns + t3.usageReport.partialTurns > 0
+                Image(systemName: incomplete ? "exclamationmark.triangle" : "info.circle")
+                    .font(.system(size: 9)).foregroundStyle(incomplete ? .orange : .secondary)
+                    .help(T3CodeStrings(l10n.language).usageEstimates)
+                    .accessibilityLabel(T3CodeStrings(l10n.language).usageEstimates)
                 Spacer(minLength: 4)
                 let workingCount = T3ActivityPresentation.workingCount(activities)
                 if workingCount > 0 {

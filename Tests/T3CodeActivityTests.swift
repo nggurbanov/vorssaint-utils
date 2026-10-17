@@ -3,6 +3,7 @@
 // Lifecycle cases informed by Bruno Hjorth (liltaket), PR #2747.
 
 import Foundation
+import SQLite3
 
 /// Contract checks target the v0.1.0 wire schema, not a copied provider log.
 enum T3CodeActivityTests {
@@ -15,6 +16,8 @@ enum T3CodeActivityTests {
         transitions(suite)
         presentation(suite)
         configuration(suite)
+        localNames(suite)
+        usage(suite)
         MainActor.assumeIsolated { expiry(suite) }
         let done = DispatchSemaphore(value: 0)
         Task.detached {
@@ -24,10 +27,179 @@ enum T3CodeActivityTests {
         suite.expect(done.wait(timeout: .now() + 10) == .success, "T3 transport checks finish within a bounded timeout")
         for language in AppLanguage.allCases {
             let strings = T3CodeStrings(language)
+            suite.expect(!strings.usageEstimates.isEmpty, "T3 usage coverage is explained in \(language)")
             for state: T3ThreadState in [.working, .waiting, .waitingForInput, .waitingForApproval, .waitingForPlan,
                                          .limited, .idle, .completed, .failed, .stopped] {
                 suite.expect(!strings.stateText(state).isEmpty, "T3 state has a label in \(language)")
             }
+        }
+    }
+
+    private static func usageWire(overrides: [String: Any] = [:], threadID: String = "thread-1") -> Data {
+        var turn: [String: Any] = [
+            "id": "turn-1", "providerThreadId": "pt-1", "nodeId": "node-1", "runAttemptId": "attempt-1",
+            "nativeTurnRef": ["nativeId": "native-turn-1", "strength": "strong"],
+            "startedAt": "2026-10-17T09:58:00Z", "completedAt": "2026-10-17T10:00:00Z",
+            "turnTokenUsage": ["usageStatus": "complete", "usageScope": "main_agent", "hasSubagents": false,
+                               "inputTokens": 10000, "cachedInputTokens": 8000, "cacheCreationTokens": 500,
+                               "outputTokens": 1000, "reasoningTokens": 100],
+            "tokenUsage": ["usedTokens": 9999999]
+        ]
+        overrides.forEach { turn[$0.key] = $0.value }
+        return try! JSONSerialization.data(withJSONObject: ["projection": [
+            "thread": ["id": threadID, "projectId": "project-1"],
+            "runs": [["id": "run-1", "modelSelection": ["model": "gpt-6-sol"]]],
+            "attempts": [["id": "attempt-1", "runId": "run-1"]],
+            "nodes": [["id": "node-1", "runId": "run-1"]],
+            "providerThreads": [["id": "pt-1", "driver": "codex",
+                "nativeThreadRef": ["nativeId": "native-session-1", "strength": "strong"]]],
+            "providerTurns": [turn], "messages": [["text": "PRIVATE_TRANSCRIPT_MUST_BE_IGNORED"]],
+            "turnItems": [["toolOutput": "PRIVATE_TOOL_OUTPUT"]]
+        ]])
+    }
+
+    private static func usage(_ suite: TestSuite) {
+        let oldPrices = AgentPricing.list
+        defer { AgentPricing.install(oldPrices) }
+        AgentPricing.install(AgentPriceList(updated: now, claude: [],
+            codex: [.init(id: "gpt-6-sol", price: AgentPrice(input: 2, output: 8, cacheRead: 0.2, cacheWrite: 3, cacheWriteLong: 4))],
+            claudePlans: [], codexPlans: [], webSearch: 0, usOnlyMultiplier: 1))
+        func report(_ overrides: [String: Any] = [:]) -> T3UsageReport {
+            (try! JSONDecoder().decode(T3UsageThreadSnapshot.self, from: usageWire(overrides: overrides)))
+                .report(environmentID: "remote-1", projectTitle: "Remote project")
+        }
+        let usage = report()
+        let sample = usage.samples[0]
+        suite.expect(sample.tokens == AgentTokens(input: 1500, cacheWrite: 500, cacheRead: 8000, output: 1000, reasoning: 100),
+                     "T3 billed input excludes disjoint cache categories and reasoning stays inside output")
+        suite.expect(sample.tokens.total == 11000 && abs(sample.record.cost! - 0.0141) < 0.0000001,
+                     "T3 uses existing model pricing for API value, not context-window counters or an invoice")
+        suite.expect(sample.record.requests == 0, "a T3 turn does not fabricate the number of model responses")
+        suite.expect(sample.project.id == "t3:remote-1:project-1" && sample.project.name == "Remote project",
+                     "per-turn tokens retain T3 project identity and title")
+        let localRecord = AgentUsageRecord(provider: .codex, date: now, model: "gpt-6-sol", project: "Native project",
+            session: "local-1", tokens: AgentTokens(input: 20, output: 5), cost: 0.25, savings: 0)
+        let local = AgentUsageSummary.snapshot(records: [localRecord], limits: [:], live: [], plans: [:], providers: [.codex], now: now)
+        let combined = usage.adding(to: local, localSessions: [], providers: [.codex])
+        suite.expect(combined.usage(.today).total.tokens.total == local.usage(.today).total.tokens.total + 11000
+                     && combined.usage(.today).projects.contains { $0.id == sample.project.id },
+                     "remote turns populate existing spending and project breakdowns")
+        suite.expect(combined.days.last!.total.tokens.total == combined.usage(.today).total.tokens.total
+                     && combined.hours.reduce(0) { $0 + $1.total.tokens.total } == combined.usage(.today).total.tokens.total,
+                     "remote usage also populates trends, hourly history and activity buckets")
+        suite.expect(usage.adding(to: local, localSessions: ["codex:native-session-1"], providers: [.codex]) == local,
+                     "native response logs take precedence over overlapping T3 per-turn totals")
+        suite.expect(T3UsageReport.merge([usage, usage]).samples.count == 1,
+                     "a physical native turn seen through multiple connections counts once")
+        suite.expect(usage.adding(to: local, localSessions: [], providers: [.claude]).usage(.today).total == local.usage(.today).total,
+                     "remote usage honors provider visibility settings")
+        suite.expect(report(["turnTokenUsage": NSNull()]).samples.isEmpty && report(["turnTokenUsage": NSNull()]).missingTurns == 1,
+                     "context-window usage never substitutes for missing billed turn counters")
+        let incomplete: [String: Any] = ["usageStatus": "partial", "usageScope": "main_agent", "hasSubagents": true,
+                                        "inputTokens": 100, "outputTokens": 10]
+        suite.expect(report(["turnTokenUsage": incomplete]).partialTurns == 1,
+                     "partial counters and missing subagent coverage stay marked incomplete")
+        var invalid = incomplete
+        invalid["cachedInputTokens"] = 101
+        suite.expect(report(["turnTokenUsage": invalid]).samples.isEmpty,
+                     "inconsistent cache counters are excluded instead of overcounted")
+        suite.expect(report(["nativeTurnRef": ["nativeId": "unreliable", "strength": "weak"]]).samples.isEmpty,
+                     "turns without strong native identities cannot silently double count")
+    }
+
+    private static func localNames(_ suite: TestSuite) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = directory.appendingPathComponent("metadata.sqlite")
+        var db: OpaquePointer?
+        suite.expect(sqlite3_open(database.path, &db) == SQLITE_OK, "T3 names fixture opens")
+        defer { sqlite3_close(db) }
+        let setup = """
+            CREATE TABLE projection_projects (project_id TEXT, title TEXT, deleted_at TEXT);
+            CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT, project_id TEXT, title TEXT, deleted_at TEXT);
+            CREATE TABLE orchestration_v2_projection_provider_threads (thread_id TEXT, driver TEXT, payload_json TEXT);
+            INSERT INTO projection_projects VALUES ('project-1', 'Vorssaint', NULL);
+            INSERT INTO orchestration_v2_projection_threads VALUES ('thread-1', 'project-1', 'Integrate T3', NULL);
+            INSERT INTO orchestration_v2_projection_provider_threads VALUES ('thread-1', 'codex',
+                '{"nativeThreadRef":{"nativeId":"native-1","strength":"strong"}}');
+            INSERT INTO orchestration_v2_projection_provider_threads VALUES ('thread-1', 'claude',
+                '{"nativeThreadRef":{"nativeId":"native-1","strength":"strong"}}');
+            INSERT INTO orchestration_v2_projection_provider_threads VALUES ('thread-1', 'codex',
+                '{"nativeThreadRef":{"nativeId":"weak-1","strength":"weak"}}');
+            """
+        suite.expect(sqlite3_exec(db, setup, nil, nil, nil) == SQLITE_OK, "T3 metadata-only fixture is valid")
+        let metadata = T3LocalMetadata.read(database: database)
+        suite.expect(metadata.sessions.count == 2 && metadata.liveTitle(provider: .codex, nativeID: "native-1") == "Integrate T3",
+                     "native IDs resolve T3 conversation titles without credentials or transcript tables")
+        suite.expect(metadata.session(provider: .codex, nativeID: "native-1")?.project.name == "Vorssaint",
+                     "usage attribution uses the T3 project title, separately from the conversation title")
+        suite.expect(metadata.session(provider: .codex, nativeID: "weak-1") == nil,
+                     "weak references never relabel an unrelated native session")
+        let records = [AgentUsageRecord(provider: .codex, date: now, model: "gpt-6-sol", project: "2026-10-17-weird-slug",
+                                       session: "native-1", tokens: AgentTokens(input: 100, output: 20), cost: 0.5, savings: 0.1),
+                       AgentUsageRecord(provider: .codex, date: now, model: "gpt-6-sol", project: "2026-10-17-weird-slug",
+                                       session: "unrelated", tokens: AgentTokens(input: 40, output: 10), cost: 0.2, savings: 0)]
+        let cache = AgentUsageSummaryCache()
+        func snapshot(_ metadata: T3LocalMetadata) -> AgentUsageSnapshot {
+            cache.snapshot(records: records, limits: [:], live: [], plans: [:], providers: [.codex], now: now,
+                           projectsBySession: metadata.projectsBySession)
+        }
+        let raw = snapshot(T3LocalMetadata())
+        let named = snapshot(metadata)
+        suite.expect(named.usage(.today).projects.contains { $0.name == "Vorssaint" && $0.totals.cost == 0.5 },
+                     "historical Projects attributes existing usage to the real T3 project")
+        suite.expect(named.usage(.today).projects.contains { $0.name == "2026-10-17-weird-slug" && $0.totals.cost == 0.2 },
+                     "an unrelated session in the same folder keeps its original attribution")
+        suite.expect(named.usage(.today).total == raw.usage(.today).total && named.days == raw.days && named.hours == raw.hours,
+                     "T3 names preserve spending, tokens, trend buckets and response counts without importing duplicates")
+        _ = snapshot(metadata)
+        suite.expect(cache.accumulatedRecords == 0, "unchanged T3 names preserve incremental summary caching")
+        suite.expect(sqlite3_exec(db, "UPDATE projection_projects SET title = 'Renamed project'; UPDATE orchestration_v2_projection_threads SET title = 'Renamed conversation'", nil, nil, nil) == SQLITE_OK,
+                     "T3 fixture can rename projects and conversations")
+        let renamed = T3LocalMetadata.read(database: database)
+        let afterRename = snapshot(renamed)
+        suite.expect(afterRename.usage(.today).projects.contains { $0.id == "t3-local:project-1" && $0.name == "Renamed project" },
+                     "renaming T3 rebuilds historical attribution without changing project identity")
+        suite.expect(renamed.liveTitle(provider: .codex, nativeID: "native-1") == "Renamed conversation",
+                     "conversation titles follow T3 renames")
+        suite.expect(snapshot(T3LocalMetadata()).usage(.today).projects == raw.usage(.today).projects,
+                     "unavailable metadata falls back to original names without modifying stored usage")
+        suite.expect(sqlite3_exec(db, "INSERT INTO orchestration_v2_projection_threads VALUES ('thread-2', 'project-1', 'Different owner', NULL); INSERT INTO orchestration_v2_projection_provider_threads SELECT 'thread-2', driver, payload_json FROM orchestration_v2_projection_provider_threads WHERE driver = 'codex'", nil, nil, nil) == SQLITE_OK,
+                     "T3 ambiguity fixture is valid")
+        let ambiguous = T3LocalMetadata.read(database: database)
+        suite.expect(ambiguous.session(provider: .codex, nativeID: "native-1") == nil
+                     && ambiguous.session(provider: .claude, nativeID: "native-1") != nil,
+                     "ambiguous native ownership is ignored and provider IDs remain isolated")
+        let missing = directory.appendingPathComponent("missing.sqlite")
+        suite.expect(T3LocalMetadata.read(database: missing).sessions.isEmpty && !FileManager.default.fileExists(atPath: missing.path),
+                     "read-only discovery never creates a T3 database")
+
+        // Exercise the extracted production service read method, not a copy of
+        // completion-notice attribution logic.
+        let host = AgentUsageReadTests.Host()
+        host.t3Metadata = metadata
+        host.store.reportsTransitions = true
+        let log = directory.appendingPathComponent("codex.jsonl")
+        let timestamp = Date().timeIntervalSince1970
+        let lines = [
+            #"{"type":"session_meta","timestamp":\#(timestamp - 20),"payload":{"id":"native-1","cwd":"/tmp/weird-slug"}}"#,
+            #"{"type":"turn_context","timestamp":\#(timestamp - 20),"payload":{"model":"gpt-6-sol","cwd":"/tmp/weird-slug"}}"#,
+            #"{"type":"event_msg","timestamp":\#(timestamp - 20),"payload":{"type":"task_started"}}"#,
+            #"{"type":"token_usage_record","timestamp":\#(timestamp - 1),"payload":{"response_id":"r","usage":{"input_tokens":100,"output_tokens":20}}}"#,
+            #"{"type":"event_msg","timestamp":\#(timestamp),"payload":{"type":"task_complete","duration_ms":20000}}"#
+        ]
+        try! Data((lines.joined(separator: "\n") + "\n").utf8).write(to: log)
+        host.read(log.path, provider: .codex)
+        suite.expect(host.events.contains { event in
+            if case .finished(.codex, _, _, 120, "Integrate T3") = event { return true }
+            return false
+        }, "production completion delivery replaces the scratch slug with the T3 conversation title")
+
+        if ProcessInfo.processInfo.environment["VORSS_T3_METADATA_ACCEPTANCE"] == "1" {
+            let real = T3LocalMetadata.read(home: FileManager.default.homeDirectoryForCurrentUser)
+            suite.expect(!real.sessions.isEmpty, "the production metadata reader joins real T3 session/project titles")
+            print("T3 local metadata acceptance: \(real.sessions.count) provider/session identities; no credentials read")
         }
     }
 
@@ -204,6 +376,18 @@ enum T3CodeActivityTests {
             let snapshot = requests.last!
             suite.expect(snapshot.httpMethod == "GET" && snapshot.value(forHTTPHeaderField: "x-t3-orchestration-protocol") == "2",
                          "thread activity uses the release's read endpoint and protocol header")
+            transport.usageData = usageWire()
+            let usage = try await client.fetchUsageThread(endpoint: endpoint, token: token, threadID: "thread-1")
+            suite.expect(usage.report(environmentID: identity.id, projectTitle: "Test").samples.count == 1,
+                         "production HTTP client decodes per-turn usage with the existing read-only credential")
+            suite.expect(transport.requests.last!.httpMethod == "GET"
+                         && transport.requests.last!.value(forHTTPHeaderField: "x-t3-orchestration-protocol") == "2",
+                         "usage reads neither mutate T3 nor request broader scopes")
+            transport.usageData = usageWire(threadID: "different-thread")
+            do {
+                _ = try await client.fetchUsageThread(endpoint: endpoint, token: token, threadID: "thread-1")
+                suite.expect(false, "usage for a different thread must be rejected")
+            } catch { suite.expect(error as? T3CodeConnectionError == .invalidResponse, "usage validates returned thread identity") }
             for (status, expected): (Int, T3CodeConnectionError) in [
                 (401, .authenticationExpired), (403, .readPermissionMissing), (503, .serverUnavailable)
             ] {
@@ -242,6 +426,7 @@ private final class T3FixtureTransport: T3CodeHTTPTransport, @unchecked Sendable
     var identity = "env-1"
     var scope = "orchestration:read"
     var shellStatus = 200
+    var usageData: Data?
     let shell: Data
     init(shell: Data) { self.shell = shell }
 
@@ -255,7 +440,7 @@ private final class T3FixtureTransport: T3CodeHTTPTransport, @unchecked Sendable
         case "/oauth/token":
             data = try JSONSerialization.data(withJSONObject: ["access_token": "fixture-token", "token_type": "Bearer",
                 "issued_token_type": "urn:ietf:params:oauth:token-type:access_token", "expires_in": 3600, "scope": scope])
-        default: data = shell
+        default: data = request.url!.path.hasPrefix("/api/orchestration/threads/") ? usageData ?? shell : shell
         }
         let status = request.url!.path == "/api/orchestration/shell" ? shellStatus : 200
         return (data, HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
@@ -286,6 +471,14 @@ enum T3CodeLiveAcceptance {
                 suite.expect(activities.allSatisfy { !$0.environment.isEmpty && !$0.provider.isEmpty },
                              "real activity carries environment and provider identities")
                 print("LIVE T3: \(activities.count) threads; \(activities.filter { $0.state == .working }.count) working; environment \(identity.label)")
+                if let thread = activities.first(where: { $0.provider.lowercased().contains("codex") && $0.latestRunID != nil }) {
+                    let detail = try await client.fetchUsageThread(endpoint: origin, token: token, threadID: thread.threadID)
+                    let report = detail.report(environmentID: identity.id, projectTitle: thread.project)
+                    suite.expect(!report.samples.isEmpty, "real read-only thread API provides attributable per-turn tokens")
+                    suite.expect(report.samples.allSatisfy { !$0.project.name.isEmpty && $0.nativeSession != nil },
+                                 "real remote token records retain project titles and native identities")
+                    print("LIVE T3 USAGE: \(report.samples.count) turns; \(report.missingTurns) missing; \(report.partialTurns) partial")
+                }
             } catch { suite.expect(false, "live T3 acceptance failed: \(error)") }
         }
         suite.expect(done.wait(timeout: .now() + 45) == .success, "live acceptance completes within 45 seconds")
