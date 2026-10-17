@@ -7,6 +7,7 @@ import SwiftUI
 struct NotchAgentsView: View {
     let size: CGSize
     @ObservedObject private var usage = AgentUsageService.shared
+    @ObservedObject private var t3 = T3CodeActivityService.shared
     @ObservedObject private var accounts = CodexProfileLimitsService.shared
     @ObservedObject private var l10n = L10n.shared
     @Environment(\.notchSettingsPreview) private var preview
@@ -20,6 +21,8 @@ struct NotchAgentsView: View {
     @AppStorage(DefaultsKey.notchAgentsCopilot) private var copilot = true
 
     private var text: NotchAgentStrings { FeatureStrings.notchAgents(l10n.language) }
+    private var t3Activities: [T3ThreadActivity] { T3ActivityPresentation.visible(t3.activities) }
+
     private var chosenPeriod: AgentPeriod { AgentPeriod(rawValue: period) ?? .today }
 
     /// The Codex homes the person added, each with a card in the Limits
@@ -46,20 +49,23 @@ struct NotchAgentsView: View {
 
     var body: some View {
         Group {
-            if !usage.snapshot.loaded && codexAccounts.isEmpty {
+            if !usage.snapshot.loaded && codexAccounts.isEmpty && !t3.hasSavedConnection {
                 VStack(spacing: 10) {
                     ProgressView().controlSize(.small)
                     Text(text.loading).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if providers.isEmpty {
+            } else if providers.isEmpty && !t3.hasSavedConnection {
                 NotchEmptyView(symbol: "sparkles", message: text.empty)
-            } else if rows.isEmpty {
+            } else if rows.isEmpty && !t3.hasSavedConnection {
                 NotchEmptyView(symbol: "square.grid.2x2", message: text.noCards)
             } else {
                 let rows = rows
                 TimelineView(.periodic(from: .now, by: 15)) { context in
-                    if NotchAgentSupport.contentHeight(rows) > size.height + 0.5 {
+                    let remoteHeight = T3ActivityPresentation.contentHeight(count: t3Activities.count,
+                                                                            hasConnections: t3.hasSavedConnection)
+                    let gap = !rows.isEmpty && remoteHeight > 0 ? NotchAgentSupport.spacing : 0
+                    if NotchAgentSupport.contentHeight(rows) + remoteHeight + gap > size.height + 0.5 {
                         ScrollView { grid(rows, now: context.date) }
                             .scrollIndicators(.automatic)
                     } else {
@@ -96,6 +102,7 @@ struct NotchAgentsView: View {
 
     private func grid(_ rows: [[NotchAgentTile]], now: Date) -> some View {
         VStack(spacing: NotchAgentSupport.spacing) {
+            if t3.hasSavedConnection { t3Section(t3Activities, now: now) }
             ForEach(rows, id: \.first?.id) { row in
                 HStack(spacing: NotchAgentSupport.spacing) {
                     ForEach(row) { tile in card(tile, now: now) }
@@ -104,6 +111,69 @@ struct NotchAgentsView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .top)
+    }
+
+    private func t3Section(_ activities: [T3ThreadActivity], now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 5) {
+                Image(systemName: "circle.hexagongrid.fill").font(.system(size: 10))
+                Text(T3CodeStrings(l10n.language).source).font(.system(size: 10, weight: .semibold))
+                Spacer(minLength: 4)
+                let workingCount = T3ActivityPresentation.workingCount(activities)
+                if workingCount > 0 {
+                    Text(T3CodeStrings(l10n.language).workingCount(workingCount))
+                        .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+                }
+                if t3.connectionStatuses.contains(where: { $0.state != .connected }) {
+                    Image(systemName: "wifi.exclamationmark")
+                        .foregroundStyle(.orange)
+                        .help(t3.connectionStatuses.filter { $0.state != .connected }.map {
+                            "\($0.connection.label): \(T3CodeStrings(l10n.language).statusText($0.state))"
+                        }.joined(separator: "\n"))
+                }
+            }
+            if activities.isEmpty {
+                Text(T3CodeStrings(l10n.language).statusText(t3.state))
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            ForEach(activities) { activity in
+                t3Row(activity, now: now)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func t3Row(_ activity: T3ThreadActivity, now: Date) -> some View {
+        let strings = T3CodeStrings(l10n.language)
+        let priority = activity.state.needsAttention
+        let provider = [activity.provider, activity.model].filter { !$0.isEmpty }.joined(separator: " · ")
+        let location = activity.location
+        return HStack(alignment: .top, spacing: 7) {
+            NotchT3Mark(state: activity.state, size: 10)
+                .frame(width: 12, height: 14)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Text(activity.title.isEmpty ? activity.project : activity.title)
+                        .font(.system(size: 10, weight: .medium)).lineLimit(1)
+                    Text(strings.stateText(activity.state))
+                        .font(.system(size: 9)).foregroundStyle(priority ? .orange : .secondary).lineLimit(1)
+                    Spacer(minLength: 2)
+                    if activity.state == .limited, let reset = activity.usageLimitResetAt {
+                        Text(reset, style: .time).font(.system(size: 9)).foregroundStyle(.secondary)
+                    } else if activity.state.isActive, let started = activity.startedAt {
+                        Text(AgentFormat.duration(max(0, now.timeIntervalSince(started)),
+                             locale: l10n.language.formattingLocale(), style: .short))
+                            .font(.system(size: 9, weight: .medium)).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                }
+                Text([location, provider].filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .frame(height: 28)
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder private func card(_ tile: NotchAgentTile, now: Date) -> some View {

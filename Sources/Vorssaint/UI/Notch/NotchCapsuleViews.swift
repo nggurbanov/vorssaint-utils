@@ -401,6 +401,7 @@ private struct NotchCapsuleCompanionMark: View {
     let geometry: NotchGeometry
     @ObservedObject private var downloads = NotchDownloadService.shared
     @ObservedObject private var music = NotchMusicService.shared
+    @ObservedObject private var t3 = T3CodeActivityService.shared
     @ObservedObject private var usage = AgentUsageService.shared
     @ObservedObject private var calendar = NotchCalendarService.shared
     @ObservedObject private var l10n = L10n.shared
@@ -417,9 +418,13 @@ private struct NotchCapsuleCompanionMark: View {
                 }
             }
         case .agents:
-            NotchCapsuleAgentMarks(providers: AgentProvider.allCases.filter { provider in
-                usage.snapshot.live.contains { $0.provider == provider }
-            })
+            if let summary = T3ActivityPresentation.compactSummary(t3.activities) {
+                NotchT3Mark(state: summary.state, size: CapsuleLayout.symbolSize)
+            } else {
+                NotchCapsuleAgentMarks(providers: AgentProvider.allCases.filter { provider in
+                    usage.snapshot.live.contains { $0.provider == provider }
+                })
+            }
         case .music:
             let side = CapsuleLayout.artworkSide(geometry)
             NotchMusicCover(artwork: music.artwork, side: side, radius: side / 2, source: music.playback?.track)
@@ -441,6 +446,7 @@ struct NotchCapsuleAgentStrip: View {
     let size: CGSize
     /// Another display's capsule, when the island shows on every display.
     var displayGeometry: NotchGeometry? = nil
+    @ObservedObject private var t3 = T3CodeActivityService.shared
     @ObservedObject private var usage = AgentUsageService.shared
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(DefaultsKey.notchAgentsReadout) private var readout = NotchAgentReadout.elapsed.rawValue
@@ -453,16 +459,18 @@ struct NotchCapsuleAgentStrip: View {
 
     var body: some View {
         // The last agent stopping empties the list before the strip has left.
-        NotchStripHold(usage.snapshot.live, shows: !usage.snapshot.live.isEmpty) { row(live: $0) }
+        let snapshot = NotchAgentStripSnapshot(live: usage.snapshot.live, t3: T3ActivityPresentation.compactSummary(t3.activities))
+        NotchStripHold(snapshot, shows: snapshot.shows) { row(live: $0.live, summary: $0.t3) }
     }
 
-    @ViewBuilder private func row(live: [AgentLiveSession]) -> some View {
+    @ViewBuilder private func row(live: [AgentLiveSession], summary: T3CompactActivitySummary?) -> some View {
         let working = working(live)
         NotchCapsuleRow(size: size, geometry: displayGeometry ?? service.geometry) {
             HStack(spacing: CapsuleLayout.spacing) {
-                NotchCapsuleAgentMarks(providers: working)
+                if let summary { NotchT3Mark(state: summary.state, size: CapsuleLayout.symbolSize) }
+                else { NotchCapsuleAgentMarks(providers: working) }
                 NotchAgentReadoutTimeline(readout: NotchAgentReadout(rawValue: readout) ?? .elapsed) { date in
-                    let text = reading(at: date, live: live)
+                    let text = summary?.compactReadout ?? reading(at: date, live: live)
                     Text(text)
                         .font(Font(CapsuleLayout.readingFont as CTFont))
                         .foregroundStyle(working.first?.tint ?? .white)
@@ -476,8 +484,8 @@ struct NotchCapsuleAgentStrip: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(working.map(\.displayName).joined(separator: ", "))
-        .accessibilityValue(reading(at: Date(), live: live))
+        .accessibilityLabel(summary?.accessibilityReadout(language: l10n.language) ?? working.map(\.displayName).joined(separator: ", "))
+        .accessibilityValue(summary?.compactReadout ?? reading(at: Date(), live: live))
         .accessibilityHint(FeatureStrings.notch(l10n.language).open)
     }
 

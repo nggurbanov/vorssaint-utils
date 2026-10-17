@@ -52,6 +52,9 @@ struct NotchAgentsSettingsControls: View {
             if codex { CodexAccountsSettings() }
 
             Divider()
+            T3CodeSettings()
+
+            Divider()
             Text(text.cardsTitle).font(.subheadline.weight(.medium))
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 8)], spacing: 8) {
                 ForEach(orderedCards) { card in

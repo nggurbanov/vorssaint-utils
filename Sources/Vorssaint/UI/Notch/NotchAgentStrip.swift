@@ -3,6 +3,12 @@
 
 import SwiftUI
 
+struct NotchAgentStripSnapshot: Equatable {
+    let live: [AgentLiveSession]
+    let t3: T3CompactActivitySummary?
+    var shows: Bool { !live.isEmpty || t3 != nil }
+}
+
 /// The closed island while an agent works: its mark on one side of the
 /// camera, one reading the person chose on the other. The wings are as wide
 /// as the reading, and both sit at the ends, where the island shows.
@@ -11,6 +17,7 @@ struct NotchAgentStrip: View {
     /// Where the island draws it: its own strip as of the last update, or
     /// another display's when the island shows on every display.
     var displayGeometry: NotchGeometry? = nil
+    @ObservedObject private var t3 = T3CodeActivityService.shared
     @ObservedObject private var usage = AgentUsageService.shared
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(DefaultsKey.notchAgentsReadout) private var readout = NotchAgentReadout.elapsed.rawValue
@@ -23,10 +30,11 @@ struct NotchAgentStrip: View {
 
     var body: some View {
         // The last agent stopping empties the list before the strip has left.
-        NotchStripHold(usage.snapshot.live, shows: !usage.snapshot.live.isEmpty) { strip(live: $0) }
+        let snapshot = NotchAgentStripSnapshot(live: usage.snapshot.live, t3: T3ActivityPresentation.compactSummary(t3.activities))
+        NotchStripHold(snapshot, shows: snapshot.shows) { strip(live: $0.live, summary: $0.t3) }
     }
 
-    @ViewBuilder private func strip(live: [AgentLiveSession]) -> some View {
+    @ViewBuilder private func strip(live: [AgentLiveSession], summary: T3CompactActivitySummary?) -> some View {
         // Resolve layout once per presentation update. The timeline captures
         // these values, so ticking the clock never remeasures the island or
         // walks the preferences for every font, inset and frame.
@@ -44,7 +52,8 @@ struct NotchAgentStrip: View {
             Button { service.openActivity(.agents) } label: {
                 HStack(spacing: 1) {
                     if geometry.compactActivityWingWidth >= 28 {
-                        ForEach(working) { NotchAgentGlyph(provider: $0, size: iconSize) }
+                        if let summary { NotchT3Mark(state: summary.state, size: iconSize) }
+                        else { ForEach(working) { NotchAgentGlyph(provider: $0, size: iconSize) } }
                     }
                 }
                 .padding(.leading, iconInset)
@@ -57,7 +66,7 @@ struct NotchAgentStrip: View {
                 Group {
                     if geometry.compactActivityWingWidth >= 42 {
                         NotchAgentReadoutTimeline(readout: NotchAgentReadout(rawValue: readout) ?? .elapsed) { date in
-                            let text = reading(at: date, live: live)
+                            let text = summary?.compactReadout ?? reading(at: date, live: live)
                             Text(text)
                                 .font(.system(size: textSize, weight: .medium))
                                 .monospacedDigit()
@@ -84,8 +93,8 @@ struct NotchAgentStrip: View {
         .padding(.top, geometry.compactActivityTopPadding)
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(working.map(\.displayName).joined(separator: ", "))
-        .accessibilityValue(reading(at: Date(), live: live))
+        .accessibilityLabel(summary?.accessibilityReadout(language: l10n.language) ?? working.map(\.displayName).joined(separator: ", "))
+        .accessibilityValue(summary?.compactReadout ?? reading(at: Date(), live: live))
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { service.openActivity(.agents) }
         .accessibilityHint(FeatureStrings.notch(l10n.language).open)

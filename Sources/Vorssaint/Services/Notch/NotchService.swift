@@ -186,6 +186,7 @@ final class NotchService: ObservableObject {
     /// triggers, so the island eases to the new width rather than springing.
     private var noticeFitsInPlace = false
     private var noticeWork: DispatchWorkItem?
+    private var t3PresentationWork: DispatchWorkItem?
     private var departureWork: DispatchWorkItem?
     private var musicDepartureWork: DispatchWorkItem?
     private var presentedMusic: NotchCompactMusicSnapshot?
@@ -481,7 +482,21 @@ final class NotchService: ObservableObject {
     }
 
     var hasAgentActivity: Bool {
-        NotchAgentSupport.showsLiveActivity() && !AgentUsageService.shared.snapshot.live.isEmpty
+        NotchAgentSupport.showsLiveActivity() && (!AgentUsageService.shared.snapshot.live.isEmpty
+            || T3ActivityPresentation.compactSummary(T3CodeActivityService.shared.activities) != nil)
+    }
+
+    /// T3 carries its own state and label, rather than pretending to be a CLI
+    /// provider and polluting locally measured token or spend totals.
+    private var agentMarkCount: Int {
+        T3ActivityPresentation.compactSummary(T3CodeActivityService.shared.activities) != nil
+            ? 1 : Set(AgentUsageService.shared.snapshot.live.map(\.provider)).count
+    }
+
+    private var agentStripReading: String {
+        T3ActivityPresentation.compactSummary(T3CodeActivityService.shared.activities)?.compactReadout
+            ?? NotchAgentSupport.stripReading(AgentUsageService.shared.snapshot, readout: NotchAgentSupport.readout(),
+                display: NotchAgentSupport.limitDisplay(), focus: NotchAgentSupport.limitFocus(), now: Date())
     }
 
     var hasCalendarActivity: Bool {
@@ -714,7 +729,7 @@ final class NotchService: ObservableObject {
         case .music:
             return provisional.compactMusicArtworkSide + provisional.compactMusicArtworkInset
         case .agents:
-            let working = Set(AgentUsageService.shared.snapshot.live.map(\.provider)).count
+            let working = agentMarkCount
             let side = NotchTimerSupport.stripAgentMarkSize(height: height, working: working)
             return CGFloat(max(1, working)) * (side * 1.45 + 1) + CGFloat(max(0, working - 1))
                 + provisional.compactActivityEdgeInset(boxHeight: side + 4, radius: (side + 4) / 2)
@@ -742,16 +757,14 @@ final class NotchService: ObservableObject {
     private func agentStripWing(in geometry: NotchGeometry) -> CGFloat {
         let provisional = geometry.compactAgentGeometry(wing: NotchAgentSupport.stripWingRange.lowerBound)
         let size = NotchAgentSupport.stripTextSize(height: provisional.compactActivityContentHeight)
-        let shape = NotchAgentSupport.readingShape(NotchAgentSupport.stripReading(
-            AgentUsageService.shared.snapshot, readout: NotchAgentSupport.readout(),
-            display: NotchAgentSupport.limitDisplay(), focus: NotchAgentSupport.limitFocus(), now: Date()))
+        let shape = NotchAgentSupport.readingShape(agentStripReading)
         let width = (shape as NSString).size(withAttributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: size, weight: .medium)
         ]).width
         let reading = width.rounded(.up) + provisional.compactActivityEdgeInset(boxHeight: size * 0.72, radius: 0)
         // The marks on the other side, drawn as the strip draws them: two
         // working agents share a smaller size, each in a frame wider than it.
-        let working = Set(AgentUsageService.shared.snapshot.live.map(\.provider)).count
+        let working = agentMarkCount
         let mark = CGFloat(working > 1 ? 11 : 14)
         let frame = mark * 1.45 + 1
         let marks = CGFloat(max(1, working)) * frame + CGFloat(max(0, working - 1))
@@ -815,6 +828,20 @@ final class NotchService: ObservableObject {
                                         ? agentsContentHeight(width: geometry.contentWidth) : nil)
     }
 
+    private func refreshT3Presentation() {
+        syncMenuSpaceMonitoring()
+        objectWillChange.send()
+        refreshPresentation()
+        t3PresentationWork?.cancel()
+        guard let expiry = T3ActivityPresentation.compactCompletionExpiry(T3CodeActivityService.shared.activities) else {
+            t3PresentationWork = nil
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in self?.refreshT3Presentation() }
+        t3PresentationWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.01, expiry.timeIntervalSinceNow), execute: work)
+    }
+
     /// The AI page is as tall as the cards it shows; nil while the logs are
     /// first read, when the page fills the island with its progress.
     private func agentsContentHeight(width: CGFloat) -> CGFloat? {
@@ -822,12 +849,16 @@ final class NotchService: ObservableObject {
         let enabled = NotchAgentSupport.providers()
         // Added Codex accounts have cards before, or without, any log.
         let accounts = NotchAgentSupport.showsCodexAccounts() ? CodexProfileLimitsService.shared.states.map(\.id) : []
-        guard usage.loaded || !accounts.isEmpty else { return nil }
+        let t3 = T3CodeActivityService.shared
+        let remoteHeight = T3ActivityPresentation.contentHeight(count: T3ActivityPresentation.visible(t3.activities).count,
+                                                               hasConnections: t3.hasSavedConnection)
+        guard usage.loaded || !accounts.isEmpty || remoteHeight > 0 else { return nil }
         let providers = enabled.filter { usage.seen.contains($0) || ($0 == .codex && !accounts.isEmpty) }
-        guard !providers.isEmpty else { return 0 }
-        return NotchAgentSupport.contentHeight(NotchAgentSupport.rows(
+        guard !providers.isEmpty else { return remoteHeight }
+        let localHeight = NotchAgentSupport.contentHeight(NotchAgentSupport.rows(
             NotchAgentSupport.tiles(cards: NotchAgentSupport.cards(), providers: providers, codexAccounts: accounts),
             width: width))
+        return localHeight + remoteHeight + (localHeight > 0 && remoteHeight > 0 ? NotchAgentSupport.spacing : 0)
     }
     var expandedGeometry: NotchGeometry {
         var result = geometry
@@ -981,7 +1012,7 @@ final class NotchService: ObservableObject {
         let layout = NotchCapsuleLayout.self
         let language = L10n.shared.language
         let download = NotchDownloadService.shared.items.first { $0.active && !$0.completed }
-        let working = Set(AgentUsageService.shared.snapshot.live.map(\.provider)).count
+        let working = agentMarkCount
         switch activity {
         case .music:
             let live = NotchMusicService.shared.playback
@@ -1000,9 +1031,7 @@ final class NotchService: ObservableObject {
             return layout.downloadSurface(name: download?.name ?? FeatureStrings.notchFiles(language).downloadsTitle,
                                           hasProgress: download?.fraction != nil, geometry: geometry, language: language)
         case .agents:
-            let reading = NotchAgentSupport.stripReading(AgentUsageService.shared.snapshot, readout: NotchAgentSupport.readout(),
-                                                         display: NotchAgentSupport.limitDisplay(),
-                                                         focus: NotchAgentSupport.limitFocus(), now: Date())
+            let reading = agentStripReading
             return layout.agentSurface(reading: reading, working: working, geometry: geometry)
         case .calendar:
             guard let countdown = NotchCalendarService.shared.countdown else { return geometry.restingSize(showsContent: false) }
@@ -1084,7 +1113,10 @@ final class NotchService: ObservableObject {
         if !NotchFileToolsService.shared.offersMediaDrop { endFileDrop() }
         // Paused while the island is away, the section still stops at once
         // when it is turned off.
-        if !NotchAgentSupport.isEnabled() { AgentUsageService.shared.stop() }
+        if !NotchAgentSupport.isEnabled() {
+            AgentUsageService.shared.stop()
+            T3CodeActivityService.shared.stop(clearActivity: true)
+        }
         guard !suspended else {
             if session.canRunTimer { NotchTimerService.shared.syncWithPreferences() }
             else { NotchTimerService.shared.suspend() }
@@ -1101,6 +1133,7 @@ final class NotchService: ObservableObject {
         NotchNotificationService.shared.syncWithPreferences()
         NotchAudioLevelService.shared.syncWithPreferences()
         AgentUsageService.shared.syncWithPreferences()
+        T3CodeActivityService.shared.syncWithPreferences()
         followsPointer = displayPreference == .pointer || displayPreference == .all
         showsOnAllDisplays = displayPreference == .all
         updateFullscreenDisplays()
@@ -1190,6 +1223,8 @@ final class NotchService: ObservableObject {
         NotchLyricsService.shared.stop()
         NotchFileToolsService.shared.stop()
         AgentUsageService.shared.stop()
+        T3CodeActivityService.shared.stop(clearActivity: true)
+        t3PresentationWork?.cancel(); t3PresentationWork = nil
         guard running else { return }
         running = false
         NotchTimerService.shared.stop()
@@ -1253,6 +1288,8 @@ final class NotchService: ObservableObject {
         NotchCalendarService.shared.stop()
         NotchNotificationService.shared.stop()
         AgentUsageService.shared.pause()
+        T3CodeActivityService.shared.pause()
+        t3PresentationWork?.cancel(); t3PresentationWork = nil
         settingsSignature = ""
         expanded = false
         peeking = false
@@ -3867,6 +3904,28 @@ final class NotchService: ObservableObject {
             NotchDownloadService.shared.onFailure = { [weak self] in self?.reactMascot(.confused) }
         }
         if modules.contains(.agents) {
+            T3CodeActivityService.shared.$activities
+                .map { activities in
+                    T3ActivityPresentation.layoutKey(activities)
+                        + [T3ActivityPresentation.compactSummary(activities)?.compactReadout ?? ""]
+                }
+                .removeDuplicates()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.refreshT3Presentation() }
+                .store(in: &subscriptions)
+            T3CodeActivityService.shared.$connectionStatuses
+                .removeDuplicates().receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in self?.refreshT3Presentation() }
+                .store(in: &subscriptions)
+            T3CodeActivityService.shared.completed.receive(on: DispatchQueue.main)
+                .sink { [weak self] event in
+                    guard let self, NotchSupport.routes(.agents),
+                          let minimum = NotchAgentSupport.finishMinimum(), event.duration >= minimum,
+                          T3ActivityPresentation.allowsCompletionNotice(T3CodeActivityService.shared.activities) else { return }
+                    self.show(NotchNotice(event: .agents, title: T3CodeStrings(L10n.shared.language).completed,
+                        detail: [event.activity.title, event.activity.location].filter { !$0.isEmpty }.joined(separator: " · "),
+                        symbol: "checkmark.circle.fill", mascot: .celebrate))
+                }.store(in: &subscriptions)
             // Only what changes the island's size or strip: a turn starting or
             // ending, the first read landing, which agents have cards, and
             // which are working, since each one's mark widens the strip.

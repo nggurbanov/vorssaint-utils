@@ -114,6 +114,7 @@ struct NotchCompanionMark: View {
     let geometry: NotchGeometry
     @ObservedObject private var downloads = NotchDownloadService.shared
     @ObservedObject private var music = NotchMusicService.shared
+    @ObservedObject private var t3 = T3CodeActivityService.shared
     @ObservedObject private var usage = AgentUsageService.shared
     @ObservedObject private var calendar = NotchCalendarService.shared
 
@@ -124,7 +125,11 @@ struct NotchCompanionMark: View {
         case .agents:
             let working = Self.working
             HStack(spacing: 1) {
-                ForEach(working) { NotchAgentGlyph(provider: $0, size: Self.agentMarkSize(working.count, geometry)) }
+                if let summary = T3ActivityPresentation.compactSummary(t3.activities) {
+                    NotchT3Mark(state: summary.state, size: Self.agentMarkSize(1, geometry))
+                } else {
+                    ForEach(working) { NotchAgentGlyph(provider: $0, size: Self.agentMarkSize(working.count, geometry)) }
+                }
             }
         case .calendar:
             if let countdown = calendar.countdown {
@@ -185,7 +190,8 @@ struct NotchCompanionMark: View {
         case .downloads:
             return FeatureStrings.notchFiles(language).downloadsTitle
         case .agents:
-            return working.map(\.displayName).joined(separator: ", ")
+            return T3ActivityPresentation.compactSummary(T3CodeActivityService.shared.activities)?
+                .accessibilityReadout(language: language) ?? working.map(\.displayName).joined(separator: ", ")
         case .calendar:
             let text = FeatureStrings.notchCalendar(language)
             guard let countdown = NotchCalendarService.shared.countdown else { return text.title }

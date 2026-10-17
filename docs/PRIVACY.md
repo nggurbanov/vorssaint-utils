@@ -96,3 +96,16 @@ This page describes how the current version of Vorssaint behaves. If the app's b
 ## Questions
 
 If anything here is unclear, open a question in [GitHub issues](https://github.com/vorssaint/vorssaint-utils/issues), or have a look at [support](../SUPPORT.md).
+
+## Optional T3 Code integration in this fork
+
+AI Agents can connect directly to T3 Code environments you pair. Only read-only
+orchestration grants are accepted; tokens are stored in device-only Keychain
+items, while endpoint/environment metadata is kept in device-local preferences
+and excluded from settings export. Polling stops when the section is disabled.
+
+The thread-summary endpoint can include a latest message preview. This integration
+ignores it and does not persist prompts, replies, tool output or files. It retains
+thread titles, project/environment labels, provider/model names, state and timing
+in memory for display. Paired servers receive the requests and ordinary network
+metadata. See [T3 integration](T3-INTEGRATION.md) for behavior and limitations.

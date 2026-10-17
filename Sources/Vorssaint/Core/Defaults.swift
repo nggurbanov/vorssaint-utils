@@ -873,6 +873,8 @@ enum DefaultsKey {
     static let notchAgentsCodexProfiles = "notchAgentsCodexProfiles"
     static let notchAgentsOpenCode = "notchAgentsOpenCode"
     static let notchAgentsCopilot = "notchAgentsCopilot"
+    // Device-bound connection metadata only; access tokens live in Keychain.
+    static let notchAgentsT3Connections = "notchAgentsT3Connections"
     static let notchAgentsCardOrder = "notchAgentsCardOrder"
     static let notchAgentsHiddenCards = "notchAgentsHiddenCards"
     static let notchAgentsPeriod = "notchAgentsPeriod"

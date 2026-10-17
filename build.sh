@@ -283,6 +283,9 @@ if (( TEST )); then
         Sources/Vorssaint/Core/NotchGestureStrings.swift
         Sources/Vorssaint/Core/NotchAgentStrings.swift
         Sources/Vorssaint/Core/CodexAccountStrings.swift
+        Sources/Vorssaint/Core/T3CodeStrings.swift
+        Sources/Vorssaint/Services/AgentUsage/T3CodeActivity.swift
+        Sources/Vorssaint/Services/AgentUsage/T3CodeActivityService.swift
         Sources/Vorssaint/Services/Notch/NotchAgentSupport.swift
         Sources/Vorssaint/Core/NotchLockScreenStrings.swift
         Sources/Vorssaint/Services/Notch/NotchLockScreenSupport.swift
