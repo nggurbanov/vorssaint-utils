@@ -226,6 +226,9 @@ struct T3CodeClient {
         guard let http = response as? HTTPURLResponse else { throw T3CodeConnectionError.serverUnavailable }
         if http.statusCode == 401 { throw T3CodeConnectionError.authenticationExpired }
         if http.statusCode == 403 { throw T3CodeConnectionError.readPermissionMissing }
+        if http.statusCode == 429 || (500...599).contains(http.statusCode) {
+            throw T3CodeConnectionError.serverUnavailable
+        }
         guard http.statusCode == 200,
               let snapshot = try? JSONDecoder().decode(T3ShellSnapshot.self, from: data) else {
             throw T3CodeConnectionError.invalidResponse

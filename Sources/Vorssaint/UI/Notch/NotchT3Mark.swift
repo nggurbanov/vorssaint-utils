@@ -11,7 +11,7 @@ struct NotchT3Mark: View {
     var body: some View {
         Image(systemName: symbol)
             .font(.system(size: size, weight: .semibold))
-            .foregroundStyle(tint)
+            .foregroundStyle(Self.tint(for: state))
             .accessibilityLabel(T3CodeStrings(L10n.shared.language).stateText(state))
     }
 
@@ -28,7 +28,7 @@ struct NotchT3Mark: View {
         }
     }
 
-    private var tint: Color {
+    static func tint(for state: T3ThreadState) -> Color {
         if state == .completed { return .green }
         if state.needsAttention || state == .failed { return .orange }
         return .white.opacity(0.85)

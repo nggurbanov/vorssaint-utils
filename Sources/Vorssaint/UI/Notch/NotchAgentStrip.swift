@@ -40,9 +40,10 @@ struct NotchAgentStrip: View {
         // walks the preferences for every font, inset and frame.
         let geometry = displayGeometry ?? service.compactActivityGeometry
         let working = working(live)
-        let tint = working.first?.tint ?? .white
+        let tint = summary.map { NotchT3Mark.tint(for: $0.state) } ?? working.first?.tint ?? .white
+        let markCount = summary == nil ? working.count : 1
         let budget = geometry.compactActivityContentHeight - NotchLayout.compactEdgeGap * 2
-        let iconSize = min(working.count > 1 ? 11.0 : 14.0, max(8, budget - 4))
+        let iconSize = min(markCount > 1 ? 11.0 : 14.0, max(8, budget - 4))
         let textSize = NotchAgentSupport.stripTextSize(height: geometry.compactActivityContentHeight)
         let iconInset = !geometry.compactActivityUsesFooter
             ? geometry.compactActivityEdgeInset(boxHeight: iconSize + 4, radius: (iconSize + 4) / 2) : 0

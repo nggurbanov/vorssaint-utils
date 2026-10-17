@@ -2016,6 +2016,11 @@ def main():
           + declaration(dock, "    func endWindowDrag(")
           + "}\n")
 
+    write("T3AgentNotice.swift", "import Foundation\nextension T3AgentNoticeTests {\nfinal class Host: Fixture {\n"
+          + declaration("Sources/Vorssaint/Services/Notch/NotchService.swift",
+                        "    private func showAgentEvent(").replace("private func", "func", 1)
+          + "}\n}\n")
+
     write("AgentUsageEventDelivery.swift", "import Foundation\n"
           + "extension AgentUsageEventDeliveryTests {\nfinal class Host: Fixture {\n"
           + declaration("Sources/Vorssaint/Services/AgentUsage/AgentUsageService.swift",

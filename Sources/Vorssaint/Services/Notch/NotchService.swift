@@ -4034,6 +4034,7 @@ final class NotchService: ObservableObject {
         }
         switch event {
         case .finished(let provider, let duration, let cost, _, _):
+            guard T3ActivityPresentation.allowsCompletionNotice(T3CodeActivityService.shared.activities) else { return }
             show(NotchNotice(event: .agents, title: text.finished(provider.displayName),
                              detail: [AgentFormat.duration(duration, locale: locale), cost > 0 ? AgentFormat.cost(cost) : ""]
                                 .filter { !$0.isEmpty }.joined(separator: " · "),

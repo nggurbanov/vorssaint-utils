@@ -473,7 +473,7 @@ struct NotchCapsuleAgentStrip: View {
                     let text = summary?.compactReadout ?? reading(at: date, live: live)
                     Text(text)
                         .font(Font(CapsuleLayout.readingFont as CTFont))
-                        .foregroundStyle(working.first?.tint ?? .white)
+                        .foregroundStyle(summary.map { NotchT3Mark.tint(for: $0.state) } ?? working.first?.tint ?? .white)
                         .lineLimit(1).fixedSize()
                         // A reading that gains a digit, like an hour passing,
                         // widens the capsule; the service measures the same.

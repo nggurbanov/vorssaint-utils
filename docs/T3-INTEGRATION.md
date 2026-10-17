@@ -81,6 +81,9 @@ completion transitions, environment isolation, read-only pairing, credential
 routing, and deterministic stale-activity expiry. Fixture checks and a successful
 build do not by themselves establish live UI acceptance.
 
+Native results and the exact live-versus-fixture boundary are recorded in
+[T3 acceptance](T3-ACCEPTANCE.md).
+
 ## Attribution
 
 The initial activity model, transport, Keychain storage, polling/expiry logic,

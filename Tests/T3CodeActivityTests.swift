@@ -10,6 +10,7 @@ enum T3CodeActivityTests {
     private static let identity = T3EnvironmentIdentity(id: "env-1", label: "Development", machine: "dev-01")
 
     static func run(_ suite: TestSuite) {
+        T3AgentNoticeTests.run(suite)
         mapping(suite)
         transitions(suite)
         presentation(suite)
@@ -203,6 +204,19 @@ enum T3CodeActivityTests {
             let snapshot = requests.last!
             suite.expect(snapshot.httpMethod == "GET" && snapshot.value(forHTTPHeaderField: "x-t3-orchestration-protocol") == "2",
                          "thread activity uses the release's read endpoint and protocol header")
+            for (status, expected): (Int, T3CodeConnectionError) in [
+                (401, .authenticationExpired), (403, .readPermissionMissing), (503, .serverUnavailable)
+            ] {
+                transport.shellStatus = status
+                do {
+                    _ = try await client.fetchSnapshot(endpoint: endpoint, token: token)
+                    suite.expect(false, "HTTP \(status) must fail at its correct boundary")
+                } catch {
+                    suite.expect(error as? T3CodeConnectionError == expected,
+                                 "HTTP \(status) distinguishes authentication, permission and transient failure")
+                }
+            }
+            transport.shellStatus = 200
             transport.identity = "different-environment"
             let before = transport.requests.filter { $0.url?.path == "/api/orchestration/shell" }.count
             do {
@@ -227,6 +241,7 @@ private final class T3FixtureTransport: T3CodeHTTPTransport, @unchecked Sendable
     var requests: [URLRequest] { lock.withLock { recorded } }
     var identity = "env-1"
     var scope = "orchestration:read"
+    var shellStatus = 200
     let shell: Data
     init(shell: Data) { self.shell = shell }
 
@@ -242,7 +257,8 @@ private final class T3FixtureTransport: T3CodeHTTPTransport, @unchecked Sendable
                 "issued_token_type": "urn:ietf:params:oauth:token-type:access_token", "expires_in": 3600, "scope": scope])
         default: data = shell
         }
-        return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        let status = request.url!.path == "/api/orchestration/shell" ? shellStatus : 200
+        return (data, HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
     }
 }
 

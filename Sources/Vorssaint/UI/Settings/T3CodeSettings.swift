@@ -29,21 +29,25 @@ struct T3CodeSettings: View {
                 Spacer()
             }
             ForEach(t3.connectionStatuses) { connection in
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(connection.connection.label).font(.subheadline)
-                        let connectionState = connection.error.map(t3Text.errors) ?? t3Text.statusText(connection.state)
-                        Text("\(connectionState) · \(connection.connection.endpoint)")
-                            .font(.caption).foregroundStyle(connection.state == .connected ? .green : .secondary)
-                            .lineLimit(2).textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(connection.connection.label).font(.subheadline.weight(.medium)).lineLimit(1)
+                    Text(connection.connection.endpoint)
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        .truncationMode(.middle).textSelection(.enabled)
+                        .help(connection.connection.endpoint)
+                    HStack(spacing: 8) {
+                        let state = connection.error.map(t3Text.errors) ?? t3Text.statusText(connection.state)
+                        Text(state).font(.caption)
+                            .foregroundStyle(connection.state == .connected ? .green : .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 4)
+                        Button(t3Text.rePair) { t3Endpoint = connection.connection.endpoint; t3PairingCode = "" }
+                            .font(.caption)
+                        Button(t3Text.removeEnvironment) { t3.disconnect(connectionID: connection.id) }
+                            .font(.caption)
                     }
-                    Spacer(minLength: 4)
-                    Button(t3Text.rePair) { t3Endpoint = connection.connection.endpoint; t3PairingCode = "" }
-                        .font(.caption)
-                    Button(t3Text.removeEnvironment) { t3.disconnect(connectionID: connection.id) }
-                        .font(.caption)
                 }
-                .padding(.vertical, 2)
+                .padding(.vertical, 4)
             }
             Text(t3Text.environmentsHelp)
                 .font(.caption).foregroundStyle(.secondary)
