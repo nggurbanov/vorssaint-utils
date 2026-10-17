@@ -68,6 +68,7 @@ enum UninstallerFlowTests {
         typealias L10n = Localization
         var phase: Phase = .empty
         var target: Target?
+        var refusal: UninstallerSupport.RefusedApp?
         var homebrewPackage: Package?
         var homebrewRemovalSize: Int64 = 0
         var homebrewRemovedApplication = false
@@ -270,7 +271,11 @@ enum UninstallerFlowTests {
             let link = root.appendingPathComponent("Link.app")
             try fm.createSymbolicLink(at: link, withDestinationURL: b)
             suite.expect(!uninstaller.select(appURL: link), "a symlink cannot be accepted as a removable bundle")
+            suite.expect(uninstaller.refusal == UninstallerSupport.RefusedApp(name: "Link", refusal: .link)
+                         && uninstaller.phase == .empty && uninstaller.target == nil,
+                         "a refused selection keeps the empty state and records why")
             service.beginUninstallReview(appURL: b, entryID: "b")
+            suite.expect(uninstaller.refusal == nil, "an accepted selection clears the last refusal")
             service.mode = .uninstallHomebrewConfirm(entryID: "b")
             service.uninstallFinderRequestID = UUID()
             service.query = "A new search"
