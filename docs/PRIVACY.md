@@ -110,6 +110,19 @@ orchestration grants are accepted; tokens are stored in device-only Keychain
 items, while endpoint/environment metadata is kept in device-local preferences
 and excluded from settings export. Polling stops when the section is disabled.
 
+Optional T3 Connect sign-in starts a separate browser/device authorization with
+T3's issuer (`clerk.t3.codes`) and discovers linked machines through
+`relay.t3.codes`. It does not copy T3 Desktop/CLI credentials. This fork uses
+T3's public CLI OAuth identifier and web relay protocol as a compatibility
+client. The account grant requests identity and offline access; environment
+agent sessions are separately restricted to exactly `orchestration:read`.
+Account tokens and this installation's private P-256 proof key stay in the
+device-only Keychain and are excluded from export. Only the public proof key
+leaves the device. Cloud tokens go to the issuer/relay, never to environments.
+Sign-out deletes this client's cloud login and Connect connections, preserves
+manual pairings, and attempts OAuth refresh-token revocation. Issued environment
+sessions can also be revoked through T3's access management.
+
 The thread-summary endpoint can include a message preview, and thread projections
 used for token estimates can include conversation text and tool output. T3 has no
 counters-only projection; those fields cross the wire but the thin decoders ignore

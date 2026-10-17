@@ -107,6 +107,7 @@ enum SettingsBackupSupport {
         DefaultsKey.notchAgentsCodexProfiles,
         // T3 grants and endpoint identities belong to this Mac.
         DefaultsKey.notchAgentsT3Connections,
+        DefaultsKey.notchAgentsT3ConnectSignedOut,
         DefaultsKey.dockPreviewRestoreAutohide,
         // The Space arrangement setting to put back, and a Dock restart still
         // owed, belong to this Mac's Dock.

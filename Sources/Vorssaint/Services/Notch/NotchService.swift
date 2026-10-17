@@ -1116,6 +1116,7 @@ final class NotchService: ObservableObject {
         if !NotchAgentSupport.isEnabled() {
             AgentUsageService.shared.stop()
             T3CodeActivityService.shared.stop(clearActivity: true)
+            T3ConnectService.shared.pause()
         }
         guard !suspended else {
             if session.canRunTimer { NotchTimerService.shared.syncWithPreferences() }
@@ -1134,6 +1135,7 @@ final class NotchService: ObservableObject {
         NotchAudioLevelService.shared.syncWithPreferences()
         AgentUsageService.shared.syncWithPreferences()
         T3CodeActivityService.shared.syncWithPreferences()
+        T3ConnectService.shared.syncWithPreferences()
         followsPointer = displayPreference == .pointer || displayPreference == .all
         showsOnAllDisplays = displayPreference == .all
         updateFullscreenDisplays()
@@ -1224,6 +1226,7 @@ final class NotchService: ObservableObject {
         NotchFileToolsService.shared.stop()
         AgentUsageService.shared.stop()
         T3CodeActivityService.shared.stop(clearActivity: true)
+        T3ConnectService.shared.pause()
         t3PresentationWork?.cancel(); t3PresentationWork = nil
         guard running else { return }
         running = false
@@ -1289,6 +1292,7 @@ final class NotchService: ObservableObject {
         NotchNotificationService.shared.stop()
         AgentUsageService.shared.pause()
         T3CodeActivityService.shared.pause()
+        T3ConnectService.shared.pause()
         t3PresentationWork?.cancel(); t3PresentationWork = nil
         settingsSignature = ""
         expanded = false

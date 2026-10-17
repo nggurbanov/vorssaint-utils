@@ -28,6 +28,7 @@ struct T3CodeSettings: View {
                 }
                 Spacer()
             }
+            T3ConnectSettings()
             ForEach(t3.connectionStatuses) { connection in
                 VStack(alignment: .leading, spacing: 5) {
                     Text(connection.connection.label).font(.subheadline.weight(.medium)).lineLimit(1)
@@ -41,7 +42,14 @@ struct T3CodeSettings: View {
                             .foregroundStyle(connection.state == .connected ? .green : .secondary)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 4)
-                        Button(t3Text.rePair) { t3Endpoint = connection.connection.endpoint; t3PairingCode = "" }
+                        Button(t3Text.rePair) {
+                            if connection.connection.cloudAccountID != nil {
+                                T3ConnectService.shared.reconnect(connectionID: connection.id)
+                            } else {
+                                t3Endpoint = connection.connection.endpoint
+                                t3PairingCode = ""
+                            }
+                        }
                             .font(.caption)
                         Button(t3Text.removeEnvironment) { t3.disconnect(connectionID: connection.id) }
                             .font(.caption)
@@ -52,6 +60,7 @@ struct T3CodeSettings: View {
             Text(t3Text.environmentsHelp)
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            Text(T3ConnectStrings(l10n.language).manual).font(.caption).foregroundStyle(.secondary)
             TextField(t3Text.endpoint, text: $t3Endpoint)
                 .textFieldStyle(.roundedBorder)
                 .textContentType(.URL)

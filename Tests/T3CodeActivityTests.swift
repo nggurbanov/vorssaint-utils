@@ -11,6 +11,7 @@ enum T3CodeActivityTests {
     private static let identity = T3EnvironmentIdentity(id: "env-1", label: "Development", machine: "dev-01")
 
     static func run(_ suite: TestSuite) {
+        T3ConnectTests.run(suite)
         T3AgentNoticeTests.run(suite)
         mapping(suite)
         transitions(suite)
@@ -383,6 +384,34 @@ enum T3CodeActivityTests {
             suite.expect(transport.requests.last!.httpMethod == "GET"
                          && transport.requests.last!.value(forHTTPHeaderField: "x-t3-orchestration-protocol") == "2",
                          "usage reads neither mutate T3 nor request broader scopes")
+            let proofKey = T3DPoPKey()
+            transport.tokenType = "DPoP"
+            let (_, boundToken, _) = try await client.pair(endpoint: endpoint, credential: "proof-bootstrap",
+                proofKey: proofKey, expectedEnvironmentID: identity.id)
+            let boundExchange = transport.requests.last!
+            suite.expect(boundExchange.value(forHTTPHeaderField: "DPoP") != nil,
+                         "environment exchange proves possession of the bootstrap-bound key")
+            _ = try await client.fetchSnapshot(endpoint: endpoint, token: boundToken, proofKey: proofKey)
+            _ = try await client.fetchUsageThread(endpoint: endpoint, token: boundToken, threadID: "thread-1", proofKey: proofKey)
+            let boundReads = transport.requests.suffix(2)
+            suite.expect(boundReads.allSatisfy { $0.value(forHTTPHeaderField: "Authorization") == "DPoP fixture-token"
+                && $0.value(forHTTPHeaderField: "DPoP") != nil }, "bound activity and spending reads both carry fresh proofs")
+            suite.expect(boundReads.first!.value(forHTTPHeaderField: "DPoP") != boundReads.last!.value(forHTTPHeaderField: "DPoP"),
+                         "proofs are unique for each environment request")
+            transport.tokenType = "Bearer"
+            do {
+                _ = try await client.pair(endpoint: endpoint, credential: "proof-bootstrap", proofKey: proofKey)
+                suite.expect(false, "proof-bound pairing must reject a bearer downgrade")
+            } catch { suite.expect(error as? T3CodeConnectionError == .readPermissionMissing, "Connect cannot silently downgrade to bearer access") }
+            let exchangesBefore = transport.requests.filter { $0.url?.path == "/oauth/token" }.count
+            do {
+                _ = try await client.pair(endpoint: endpoint, credential: "proof-bootstrap", proofKey: proofKey,
+                                          expectedEnvironmentID: "wrong-environment")
+                suite.expect(false, "Connect pairing must check the expected environment first")
+            } catch {
+                suite.expect(transport.requests.filter { $0.url?.path == "/oauth/token" }.count == exchangesBefore,
+                             "Connect never sends a bootstrap credential to another environment")
+            }
             transport.usageData = usageWire(threadID: "different-thread")
             do {
                 _ = try await client.fetchUsageThread(endpoint: endpoint, token: token, threadID: "thread-1")
@@ -425,6 +454,7 @@ private final class T3FixtureTransport: T3CodeHTTPTransport, @unchecked Sendable
     var requests: [URLRequest] { lock.withLock { recorded } }
     var identity = "env-1"
     var scope = "orchestration:read"
+    var tokenType = "Bearer"
     var shellStatus = 200
     var usageData: Data?
     let shell: Data
@@ -438,7 +468,7 @@ private final class T3FixtureTransport: T3CodeHTTPTransport, @unchecked Sendable
             data = try JSONSerialization.data(withJSONObject: ["environmentId": identity, "label": "Development",
                 "platform": ["machine": "dev-01"], "orchestrationProtocolVersion": 2])
         case "/oauth/token":
-            data = try JSONSerialization.data(withJSONObject: ["access_token": "fixture-token", "token_type": "Bearer",
+            data = try JSONSerialization.data(withJSONObject: ["access_token": "fixture-token", "token_type": tokenType,
                 "issued_token_type": "urn:ietf:params:oauth:token-type:access_token", "expires_in": 3600, "scope": scope])
         default: data = request.url!.path.hasPrefix("/api/orchestration/threads/") ? usageData ?? shell : shell
         }
@@ -457,7 +487,8 @@ enum T3CodeLiveAcceptance {
             do {
                 let client = T3CodeClient()
                 let origin = try client.validateEndpoint(endpoint)
-                let (identity, token, _) = try await client.pair(endpoint: origin, credential: pairingCode)
+                let proofKey = ProcessInfo.processInfo.environment["VORSSAINT_T3_DPOP"] == "1" ? T3DPoPKey() : nil
+                let (identity, token, _) = try await client.pair(endpoint: origin, credential: pairingCode, proofKey: proofKey)
                 let credentials = T3KeychainCredentialStore()
                 let account = T3KeychainCredentialStore.account(endpoint: origin, environmentID: identity.id,
                                                                 credentialID: UUID().uuidString)
@@ -465,14 +496,14 @@ enum T3CodeLiveAcceptance {
                 suite.expect(credentials.write(token, account: account), "live read grant saves to Keychain")
                 suite.expect(credentials.read(account: account) == .found(token), "live read grant reloads from Keychain")
                 let snapshot = try await client.fetchSnapshot(endpoint: origin, token: token,
-                                                              expectedEnvironmentID: identity.id)
+                                                              expectedEnvironmentID: identity.id, proofKey: proofKey)
                 let activities = snapshot.activities(environment: identity)
                 suite.expect(!activities.isEmpty, "real shell decodes through the production client")
                 suite.expect(activities.allSatisfy { !$0.environment.isEmpty && !$0.provider.isEmpty },
                              "real activity carries environment and provider identities")
                 print("LIVE T3: \(activities.count) threads; \(activities.filter { $0.state == .working }.count) working; environment \(identity.label)")
                 if let thread = activities.first(where: { $0.provider.lowercased().contains("codex") && $0.latestRunID != nil }) {
-                    let detail = try await client.fetchUsageThread(endpoint: origin, token: token, threadID: thread.threadID)
+                    let detail = try await client.fetchUsageThread(endpoint: origin, token: token, threadID: thread.threadID, proofKey: proofKey)
                     let report = detail.report(environmentID: identity.id, projectTitle: thread.project)
                     suite.expect(!report.samples.isEmpty, "real read-only thread API provides attributable per-turn tokens")
                     suite.expect(report.samples.allSatisfy { !$0.project.name.isEmpty && $0.nativeSession != nil },

@@ -161,11 +161,13 @@ struct T3CodeClient {
         return url
     }
 
-    func pair(endpoint: URL, credential: String) async throws -> (T3EnvironmentIdentity, String, Date) {
+    func pair(endpoint: URL, credential: String, proofKey: T3DPoPKey? = nil,
+              expectedEnvironmentID: String? = nil) async throws -> (T3EnvironmentIdentity, String, Date) {
         guard !credential.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw T3CodeConnectionError.pairingRejected
         }
         let identity = try await fetchDescriptor(endpoint: endpoint)
+        if let expectedEnvironmentID, expectedEnvironmentID != identity.id { throw T3CodeConnectionError.unsupportedServer }
 
         var request = URLRequest(url: endpoint.appendingPathComponent("oauth/token"))
         request.httpMethod = "POST"
@@ -183,12 +185,15 @@ struct T3CodeClient {
         request.httpBody = form.map { "\(Self.formEncode($0.key))=\(Self.formEncode($0.value))" }
             .joined(separator: "&").data(using: .utf8)
         request.timeoutInterval = 10
+        if let proofKey {
+            request.setValue(try proofKey.proof(method: "POST", url: request.url!), forHTTPHeaderField: "DPoP")
+        }
         let (tokenData, tokenResponse) = try await transport.data(for: request)
         guard let tokenHTTP = tokenResponse as? HTTPURLResponse else { throw T3CodeConnectionError.serverUnavailable }
         guard tokenHTTP.statusCode == 200 else { throw T3CodeConnectionError.pairingRejected }
         guard let token = try? JSONDecoder().decode(TokenResponse.self, from: tokenData),
               token.issuedTokenType == "urn:ietf:params:oauth:token-type:access_token",
-              token.tokenType == "Bearer", Self.hasReadOnlyScope(token.scope),
+              token.tokenType == (proofKey == nil ? "Bearer" : "DPoP"), Self.hasReadOnlyScope(token.scope),
               !token.accessToken.isEmpty, token.expiresIn.isFinite, token.expiresIn > 0 else { throw T3CodeConnectionError.readPermissionMissing }
         return (identity, token.accessToken, Date().addingTimeInterval(token.expiresIn))
     }
@@ -209,7 +214,8 @@ struct T3CodeClient {
                                      machine: descriptor.platform.machine)
     }
 
-    func fetchSnapshot(endpoint: URL, token: String, expectedEnvironmentID: String? = nil) async throws -> T3ShellSnapshot {
+    func fetchSnapshot(endpoint: URL, token: String, expectedEnvironmentID: String? = nil,
+                       proofKey: T3DPoPKey? = nil) async throws -> T3ShellSnapshot {
         // Check the unauthenticated identity before sharing a credential after
         // reconnecting: a reused address may now belong to another environment.
         if let expectedEnvironmentID {
@@ -219,6 +225,7 @@ struct T3CodeClient {
         }
         var request = URLRequest(url: endpoint.appendingPathComponent("api/orchestration/shell"))
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let proofKey { try proofKey.authorize(&request, token: token) }
         request.setValue("2", forHTTPHeaderField: "x-t3-orchestration-protocol")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 10
@@ -236,7 +243,8 @@ struct T3CodeClient {
         return snapshot
     }
 
-    func fetchUsageThread(endpoint: URL, token: String, threadID: String) async throws -> T3UsageThreadSnapshot {
+    func fetchUsageThread(endpoint: URL, token: String, threadID: String,
+                          proofKey: T3DPoPKey? = nil) async throws -> T3UsageThreadSnapshot {
         guard threadID != ".", threadID != ".." else { throw T3CodeConnectionError.invalidResponse }
         var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
         var allowed = CharacterSet.urlPathAllowed
@@ -247,6 +255,7 @@ struct T3CodeClient {
         components.percentEncodedPath = "/api/orchestration/threads/" + identifier
         var request = URLRequest(url: components.url!)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let proofKey { try proofKey.authorize(&request, token: token) }
         request.setValue("2", forHTTPHeaderField: "x-t3-orchestration-protocol")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 15
@@ -309,6 +318,8 @@ struct T3ConfiguredConnection: Codable, Equatable, Identifiable {
     var machine: String?
     var credentialID: String?
     var expiresAt: Date
+    var proofKeyAccount: String? = nil
+    var cloudAccountID: String? = nil
 
     var identity: T3EnvironmentIdentity {
         T3EnvironmentIdentity(id: environmentID, label: label, machine: machine)
@@ -441,6 +452,7 @@ final class T3CodeActivityService: ObservableObject {
     private var runtimeStates: [String: T3CodeConnectionState] = [:]
     private var errorsByConnection: [String: T3CodeConnectionError] = [:]
     private var tokens: [String: String] = [:]
+    private var proofKeys: [String: T3DPoPKey] = [:]
     private struct UsageThreadCache {
         let updatedAt: String
         let projectID: String
@@ -470,7 +482,14 @@ final class T3CodeActivityService: ObservableObject {
     var endpoint: String { configuredConnections.first?.endpoint ?? "" }
     var hasSavedConnection: Bool { !configuredConnections.isEmpty }
 
-    @MainActor func connect(endpoint rawEndpoint: String, pairingCode: String) async throws {
+    func cloudConnections(accountID: String? = nil) -> [T3ConfiguredConnection] {
+        configuredConnections.filter { $0.cloudAccountID != nil && (accountID == nil || $0.cloudAccountID == accountID) }
+    }
+
+    @MainActor func connect(endpoint rawEndpoint: String, pairingCode: String, proofKey: T3DPoPKey? = nil,
+                            proofKeyAccount: String? = nil, cloudAccountID: String? = nil,
+                            expectedEnvironmentID: String? = nil) async throws {
+        guard (proofKey == nil) == (proofKeyAccount == nil) else { throw T3CodeConnectionError.invalidResponse }
         let endpoint = try client.validateEndpoint(rawEndpoint)
         let generation = UUID()
         pairingGeneration = generation
@@ -478,10 +497,11 @@ final class T3CodeActivityService: ObservableObject {
         state = .connecting
         updateConnectionState()
         do {
-            let (identity, token, expiry) = try await client.pair(endpoint: endpoint, credential: pairingCode)
+            let (identity, token, expiry) = try await client.pair(endpoint: endpoint, credential: pairingCode,
+                proofKey: proofKey, expectedEnvironmentID: expectedEnvironmentID)
             guard !Task.isCancelled, pairingGeneration == generation else { throw CancellationError() }
             // Pairing is successful only when the released shell API is usable.
-            _ = try await client.fetchSnapshot(endpoint: endpoint, token: token)
+            _ = try await client.fetchSnapshot(endpoint: endpoint, token: token, proofKey: proofKey)
             guard !Task.isCancelled, pairingGeneration == generation else { throw CancellationError() }
             let existing = configuredConnections.first { $0.environmentID == identity.id }
             let connectionID = existing?.id ?? UUID().uuidString
@@ -503,7 +523,8 @@ final class T3CodeActivityService: ObservableObject {
             let replacement = T3ConfiguredConnection(id: connectionID, endpoint: endpoint.absoluteString,
                                                      environmentID: identity.id, label: identity.label,
                                                      machine: identity.machine, credentialID: credentialID,
-                                                     expiresAt: expiry)
+                                                     expiresAt: expiry, proofKeyAccount: proofKeyAccount,
+                                                     cloudAccountID: cloudAccountID)
             connections.removeAll { $0.environmentID == identity.id }
             connections.append(replacement)
             connectionStore.save(connections)
@@ -516,6 +537,7 @@ final class T3CodeActivityService: ObservableObject {
             }
             cancelRuntime(connectionID: connectionID, clearActivity: true)
             tokens[connectionID] = token
+            proofKeys[connectionID] = proofKey
             reducers[connectionID] = T3ActivityReducer()
             runtimeStates[connectionID] = .connected
             errorsByConnection[connectionID] = nil
@@ -606,6 +628,33 @@ final class T3CodeActivityService: ObservableObject {
                 guard !Task.isCancelled, self.generations[id] == generation else { return }
                 switch lookup {
                 case .found(let token):
+                    if let proofAccount = connection.proofKeyAccount {
+                        let lookup = await Task.detached(priority: .utility) { credentials.read(account: proofAccount) }.value
+                        guard !Task.isCancelled, self.generations[id] == generation else { return }
+                        switch lookup {
+                        case .found(let stored):
+                            guard let key = try? T3DPoPKey(stored: stored) else {
+                                self.tasks[id] = nil
+                                self.runtimeStates[id] = .needsPairing
+                                self.clearActivity(connectionID: id)
+                                self.updateConnectionState()
+                                return
+                            }
+                            self.proofKeys[id] = key
+                        case .missing:
+                            self.tasks[id] = nil
+                            self.runtimeStates[id] = .needsPairing
+                            self.clearActivity(connectionID: id)
+                            self.updateConnectionState()
+                            return
+                        case .retryable(let status):
+                            self.errorsByConnection[id] = .credentialStoreUnavailable(status)
+                            self.updateConnectionState()
+                            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                            delay = min(delay * 2, 30)
+                            continue
+                        }
+                    }
                     self.tasks[id] = nil
                     self.tokens[id] = token
                     self.runtimeStates[id] = .connected
@@ -660,7 +709,7 @@ final class T3CodeActivityService: ObservableObject {
                     }
                     let verifyIdentity = self.runtimeStates[id] != .connected
                     let snapshot = try await self.client.fetchSnapshot(endpoint: endpoint, token: token,
-                        expectedEnvironmentID: verifyIdentity ? identity.id : nil)
+                        expectedEnvironmentID: verifyIdentity ? identity.id : nil, proofKey: self.proofKeys[id])
                     guard !Task.isCancelled, generation == self.generations[id] else { return }
                     let next = snapshot.activities(environment: identity)
                     self.usageShells[id] = snapshot
@@ -718,6 +767,7 @@ final class T3CodeActivityService: ObservableObject {
         clearUsage(connectionID: connectionID)
         activityExpiryController.cancel(connectionID: connectionID, clearLastSuccess: clearActivity)
         tokens[connectionID] = nil
+        proofKeys[connectionID] = nil
         runtimeStates[connectionID] = nil
         errorsByConnection[connectionID] = nil
         if clearActivity {
@@ -760,7 +810,8 @@ final class T3CodeActivityService: ObservableObject {
                     guard self.runtimeStates[id] == .connected else { break }
                     if self.usageCache[id]?[thread.id]?.updatedAt == thread.updatedAt { continue }
                     do {
-                        let snapshot = try await self.client.fetchUsageThread(endpoint: endpoint, token: token, threadID: thread.id)
+                        let snapshot = try await self.client.fetchUsageThread(endpoint: endpoint, token: token, threadID: thread.id,
+                            proofKey: self.proofKeys[id])
                         guard !Task.isCancelled, self.generations[id] == generation else { return }
                         guard snapshot.projection.thread.projectId == thread.projectID else { continue }
                         let report = snapshot.report(environmentID: connection.environmentID,

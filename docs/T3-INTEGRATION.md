@@ -59,15 +59,50 @@ persisted to the usage archive and is cleared when the connection is removed,
 authentication expires or the reader stops. Plan/account allowances continue to
 come from their existing account readers.
 
-T3 Connect account sign-in/discovery remains a separate authentication task.
-A Connect HTTPS origin with direct read-only pairing can use the existing
-endpoint field; no persistent SSH tunnel is required by this client.
+T3 Connect sign-in discovers linked machines and obtains their read-only
+environment sessions without a persistent SSH tunnel or remote companion.
 
 References: T3 0.1.0 [turn token contract](https://github.com/pingdotgg/t3code/blob/v0.1.0/packages/contracts/src/providerRuntime.ts),
 [thread HTTP reader](https://github.com/pingdotgg/t3code/blob/v0.1.0/apps/server/src/orchestration-v2/http.ts),
 and [relay clients](https://github.com/pingdotgg/t3code/blob/v0.1.0/packages/contracts/src/relay.ts).
 
-## Pair an environment
+## Connect an account
+
+1. Enable Dynamic Island and its AI Agents section.
+2. Open **Settings → Dynamic Island → Content → AI Agents → T3 Connect** and
+   choose **Sign in to T3 Connect**.
+3. Copy the displayed verification link into a normal browser tab, or choose
+   **Open browser**. The app does not open a browser automatically. Complete
+   T3's sign-in and approve the code shown in Settings.
+4. Choose **Connect** beside each machine you want to follow.
+
+This client performs its own OAuth device authorization through T3's production
+issuer, using the public CLI OAuth client identifier from T3 0.1.0. It never
+imports T3 Desktop or CLI credentials. The relay currently accepts only its
+`t3-web` and `t3-mobile` client types; this private fork uses the public `t3-web`
+protocol. This is a compatibility integration, not an officially registered
+Vorssaint OAuth/relay client. Changes to that public protocol may require an
+update. The account grant requests `openid profile email offline_access`;
+environment agent access is separately narrowed to exactly `orchestration:read`.
+
+Each installation generates its own P-256 proof key. Relay access requests only
+`environment:connect`, binds bootstraps to that key, and exchanges them for DPoP
+environment tokens. Every agent read carries a fresh signed proof. A bearer
+downgrade or broader environment/relay scope is rejected. The discovered
+environment ID and HTTPS origin must match the bootstrap and public descriptor
+before an environment credential is sent.
+
+Machine discovery refreshes every five minutes while AI Agents is enabled.
+OAuth access is refreshed as needed; saved Connect sessions renew shortly
+before expiry or after an authentication failure. **Re-pair** on a Connect
+connection refreshes discovery and obtains a new read session. Disabling the
+feature pauses network work and keeps the login for resumption. **Sign out**
+removes this client's cloud credentials, proof key and Connect connections;
+manually paired connections remain. OAuth refresh-token revocation is attempted
+on sign-out. Removing local credentials does not guarantee server-side session
+revocation; T3's access management remains the place to revoke issued sessions.
+
+## Pair an endpoint manually
 
 1. Enable Dynamic Island and its AI Agents section.
 2. On the machine running T3, create a pairing grant:
@@ -84,8 +119,8 @@ and [relay clients](https://github.com/pingdotgg/t3code/blob/v0.1.0/packages/con
 
 HTTP is accepted only on loopback (`localhost`, `127.0.0.1`, or `::1`), including
 an SSH forward you already manage. Remote origins require HTTPS. Redirects are
-not followed. T3 Desktop's saved connections and T3 Connect sign-in are not
-imported; this is a separate read-only client.
+not followed. T3 Desktop's saved connections are not imported; this is a
+separate read-only client.
 
 ## Behavior
 
@@ -102,7 +137,7 @@ imported; this is a separate read-only client.
   read, so a dropped connection cannot leave an agent working indefinitely.
 - Disabling AI Agents or stopping the island cancels polling. Sleep/session
   suspension clears activity and resumes through the existing island lifecycle.
-- Authentication expiry requires re-pairing. Removing an environment deletes
+- Manual authentication expiry requires re-pairing. Removing an environment deletes
   its local connection record and Keychain credential; server-side session
   revocation remains available in T3's access management.
 
@@ -110,7 +145,10 @@ imported; this is a separate read-only client.
 
 Only `orchestration:read` grants are accepted. Access tokens are stored in the
 app's device-only Keychain namespace, separate for Developer and official bundle
-identities. Connection metadata is excluded from settings backups.
+identities. The independent Connect account's refresh token, access token and
+private proof key use that same namespace. Credentials and connection metadata
+are excluded from settings backups. Cloud account tokens go only to T3's OAuth
+issuer and relay, never to an environment.
 
 The shell response can include message previews, and thread projections can
 include conversation text and tool output. These fields cross the wire because
@@ -143,7 +181,11 @@ copy's island, shortcuts, input hooks and other global features at a time.
 The test suite checks the released shell schema, waiting/plan/limit mapping,
 completion transitions, environment isolation, read-only pairing, credential
 routing, and deterministic stale-activity expiry. Fixture checks and a successful
-build do not by themselves establish live UI acceptance.
+build do not by themselves establish live UI acceptance. Connect fixtures also
+cover cryptographic signature verification, token hashing, request uniqueness,
+OAuth polling/refresh, scope narrowing, environment binding, cancellation and
+sign-out cleanup. The opt-in live acceptance accepts `VORSSAINT_T3_DPOP=1` to
+exercise proof-bound environment exchange and agent/usage reads.
 
 Native results and the exact live-versus-fixture boundary are recorded in
 [T3 acceptance](T3-ACCEPTANCE.md).

@@ -284,9 +284,13 @@ if (( TEST )); then
         Sources/Vorssaint/Core/NotchAgentStrings.swift
         Sources/Vorssaint/Core/CodexAccountStrings.swift
         Sources/Vorssaint/Core/T3CodeStrings.swift
+        Sources/Vorssaint/Core/T3ConnectStrings.swift
         Sources/Vorssaint/Services/AgentUsage/T3CodeActivity.swift
         Sources/Vorssaint/Services/AgentUsage/T3LocalMetadata.swift
         Sources/Vorssaint/Services/AgentUsage/T3CodeUsage.swift
+        Sources/Vorssaint/Services/AgentUsage/T3DPoP.swift
+        Sources/Vorssaint/Services/AgentUsage/T3ConnectClient.swift
+        Sources/Vorssaint/Services/AgentUsage/T3ConnectService.swift
         Sources/Vorssaint/Services/AgentUsage/T3CodeActivityService.swift
         Sources/Vorssaint/Services/Notch/NotchAgentSupport.swift
         Sources/Vorssaint/Core/NotchLockScreenStrings.swift

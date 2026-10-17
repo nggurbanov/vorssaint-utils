@@ -1,5 +1,34 @@
 # T3 integration acceptance — 17 October 2026
 
+## T3 Connect sign-in and discovery
+
+The native Settings section now starts a separate production OAuth device
+authorization and displays T3's verification link with an optional browser
+button. The initial auto-opening flow's code and cancellation controls were
+visibly checked on the Mac below; automatic opening was then removed at the
+user's request, with selectable and copyable link controls. Account approval is still
+pending: production machine discovery, relay bootstrap and restoration of a
+real Connect account have **not yet** been accepted end to end.
+
+The production Swift DPoP client separately passed **7 live checks** against
+dev-01 over a temporary SSH forward: proof-bound environment token exchange,
+Keychain round-trip, 38 shell threads and 19 usable per-turn records. The owned
+session was explicitly revoked, zero matching active sessions remained, and the
+SSH forward was closed. No account login or agent was launched by this test.
+
+Fixtures cover the complete account/machine handoff, proof signatures and token
+hashes, scope and identity binding, fresh proofs on activity/usage reads,
+rejection of bearer downgrade, account restoration, renewal without duplicate
+connections, cancellation followed by late OAuth success, sign-out preserving
+manual connections, and prevention of login restoration after failed Keychain
+deletion. This uses T3's public CLI OAuth identifier and web relay protocol;
+it is an independent compatibility client, not an officially registered client.
+
+Updated checks: **1,138 agents**, **66,098 notch**, **111 preferences** and
+**314 repository** checks passed. The native Developer build and selftest passed. As above,
+fixtures and direct environment acceptance do not establish the pending real
+Connect-account path.
+
 ## Token usage and T3 names follow-up
 
 Verified the real read-only HTTP thread projection on dev-01: a sampled Codex
