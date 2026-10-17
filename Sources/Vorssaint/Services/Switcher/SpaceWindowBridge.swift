@@ -229,6 +229,59 @@ enum SpaceWindowBridge {
         }
     }
 
+    // MARK: - Windows hidden along with their app
+
+    private typealias WindowQueryFunction =
+        @convention(c) (ConnectionID, CFArray, Int32) -> Unmanaged<CFTypeRef>?
+    private typealias WindowQueryResultFunction = @convention(c) (CFTypeRef) -> Unmanaged<CFTypeRef>?
+    private typealias IteratorAdvanceFunction = @convention(c) (CFTypeRef) -> Bool
+    private typealias IteratorWindowIDFunction = @convention(c) (CFTypeRef) -> UInt32
+    private typealias IteratorTagsFunction = @convention(c) (CFTypeRef) -> UInt64
+
+    private struct WindowQuery {
+        let query: WindowQueryFunction
+        let windows: WindowQueryResultFunction
+        let advance: IteratorAdvanceFunction
+        let windowID: IteratorWindowIDFunction
+        let tags: IteratorTagsFunction
+    }
+
+    private static let windowQuery: WindowQuery? = {
+        guard let query = symbol("SLSWindowQueryWindows"),
+              let windows = symbol("SLSWindowQueryResultCopyWindows"),
+              let advance = symbol("SLSWindowIteratorAdvance"),
+              let windowID = symbol("SLSWindowIteratorGetWindowID"),
+              let tags = symbol("SLSWindowIteratorGetTags")
+        else { return nil }
+        return WindowQuery(query: unsafeBitCast(query, to: WindowQueryFunction.self),
+                           windows: unsafeBitCast(windows, to: WindowQueryResultFunction.self),
+                           advance: unsafeBitCast(advance, to: IteratorAdvanceFunction.self),
+                           windowID: unsafeBitCast(windowID, to: IteratorWindowIDFunction.self),
+                           tags: unsafeBitCast(tags, to: IteratorTagsFunction.self))
+    }()
+
+    /// The windows among `windowIDs` that the window server hid along with
+    /// their app. On macOS 27 `CGSGetWindowTags` reads zeros for any window
+    /// of another app, so the tags come from one batched window query, which
+    /// still answers for every app. Nil when that query is missing, and
+    /// before macOS 26, where the tag has not been observed, so callers keep
+    /// their earlier behavior.
+    static func windowsHiddenWithApp(among windowIDs: [CGWindowID]) -> Set<CGWindowID>? {
+        guard #available(macOS 26.0, *), connection != 0, let windowQuery else { return nil }
+        guard !windowIDs.isEmpty else { return [] }
+        guard let query = windowQuery.query(connection, windowIDs.map { NSNumber(value: $0) } as CFArray,
+                                            Int32(clamping: windowIDs.count))?.takeRetainedValue(),
+              let iterator = windowQuery.windows(query)?.takeRetainedValue()
+        else { return nil }
+        var hidden = Set<CGWindowID>()
+        while windowQuery.advance(iterator) {
+            if SpaceHopSupport.isHiddenWithApp(windowTags: windowQuery.tags(iterator)) {
+                hidden.insert(windowQuery.windowID(iterator))
+            }
+        }
+        return hidden
+    }
+
     // MARK: - Fronting a specific window
 
     private typealias SetFrontFunction =

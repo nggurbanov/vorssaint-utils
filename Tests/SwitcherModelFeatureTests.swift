@@ -584,6 +584,14 @@ enum SwitcherModelFeatureTests {
                "a window-server surface marked to ignore cycling is excluded from the switcher")
         suite.expect(!SpaceHopSupport.isExcludedFromWindowCycle(windowTagsLow: (1 << 19) | (1 << 22)),
                "other window-server tags do not hide a legitimate cross-Space window")
+        // One probe window's tags on macOS 27.2: hidden along with its app,
+        // closed by the app, and open.
+        func windowTags(_ bits: [UInt64]) -> UInt64 { bits.reduce(0) { $0 | 1 << $1 } }
+        suite.expect(SpaceHopSupport.isHiddenWithApp(windowTags: windowTags([0, 9, 19, 22, 32, 39, 45])),
+               "a window hidden along with its app carries the window server's hidden tag")
+        suite.expect(!SpaceHopSupport.isHiddenWithApp(windowTags: windowTags([0, 9, 19, 22, 32, 45]))
+               && !SpaceHopSupport.isHiddenWithApp(windowTags: windowTags([0, 9, 13, 19, 22, 32, 45])),
+               "a window its app closed, or one still open, does not count as hidden along with the app")
         suite.expect(SpaceHopSupport.arrowSteps(orderedSpacesPerDisplay: [[3, 4, 5]],
                                           visibleSpaces: [3],
                                           target: 5) == 2,
@@ -799,12 +807,18 @@ enum SwitcherModelFeatureTests {
                                        isAppHidden: true).isAppHidden,
                "App Switcher carries a hidden app's state through every entry shape")
         suite.expect(SwitcherSupport.isConfirmedHiddenAppWindow(appIsHidden: true,
-                                                          windowSpaces: [3])
+                                                          windowSpaces: [3], isHiddenWithApp: true)
                && !SwitcherSupport.isConfirmedHiddenAppWindow(appIsHidden: false,
-                                                              windowSpaces: [3])
+                                                              windowSpaces: [3], isHiddenWithApp: true)
                && !SwitcherSupport.isConfirmedHiddenAppWindow(appIsHidden: true,
-                                                              windowSpaces: []),
+                                                              windowSpaces: [], isHiddenWithApp: true),
                "App Switcher keeps only hidden-app surfaces assigned to a real desktop")
+        suite.expect(!SwitcherSupport.isConfirmedHiddenAppWindow(appIsHidden: true,
+                                                               windowSpaces: [3], isHiddenWithApp: false),
+               "a window its app closed before hiding stays out, though it keeps its desktop (issues #512, #2628)")
+        suite.expect(SwitcherSupport.isConfirmedHiddenAppWindow(appIsHidden: true,
+                                                              windowSpaces: [3], isHiddenWithApp: nil),
+               "without the window server's answer a hidden app keeps the desktop rule it had")
 
         // MARK: Hidden apps only follow minimized-window placement by choice
         let hiddenAppEntry = SwitcherItem.appOnly(appName: "Primary", pid: 101,

@@ -50,13 +50,18 @@ enum SwitcherFullscreenScopeTests {
         }
         static var memberships: [CGWindowID: [UInt64]] = [:]
         static var excluded: Set<CGWindowID> = []
+        static var orderedOut: Set<CGWindowID> = []
+        static var hiddenWithApp: Set<CGWindowID>?
         static let canResolveSpaces = true
         static func topology(displayIDsByUUID: [String: CGDirectDisplayID]) -> Topology? {
             Topology(visibleSpaces: [1], fullscreenSpaces: [3])
         }
         static func spaces(of id: CGWindowID) -> [UInt64] { memberships[id] ?? [] }
         static func isExcludedFromWindowCycle(_ id: CGWindowID) -> Bool { excluded.contains(id) }
-        static func isWindowOrderedIn(_ id: CGWindowID) -> Bool? { true }
+        static func isWindowOrderedIn(_ id: CGWindowID) -> Bool? { !orderedOut.contains(id) }
+        static func windowsHiddenWithApp(among windowIDs: [CGWindowID]) -> Set<CGWindowID>? {
+            hiddenWithApp.map { $0.intersection(windowIDs) }
+        }
     }
 
     final class Tracker {
@@ -74,6 +79,8 @@ enum SwitcherFullscreenScopeTests {
             Enumerator.answers = [:]
             Bridge.memberships = [:]
             Bridge.excluded = []
+            Bridge.orderedOut = []
+            Bridge.hiddenWithApp = nil
             Preferences.standard.values = [:]
         }
         let frame = CGRect(x: 0, y: 0, width: 900, height: 600)
@@ -186,5 +193,46 @@ enum SwitcherFullscreenScopeTests {
                      "a minimized window here replaces a fullscreen window from another desktop as the app's entry")
         suite.expect(enumerate(currentSpaceOnly: true).items.compactMap(\.windowID) == [8, 7],
                      "without grouping both windows of the app stay listed")
+
+        // MARK: Windows a hidden app had closed (issues #512 and #2628)
+
+        // A hidden app's windows here (30) and on another desktop (33), beside
+        // a window it closed before hiding (31), an untitled helper it keeps
+        // off screen (32) and a window it closed on the other desktop (34).
+        // Each keeps its desktop and is ordered out. Accessibility lists only
+        // the window here; the window server tags the two it hid.
+        let hiddenApp = Enumerator.AppSnapshot(pid: 9, bundleIdentifier: "test.app.9",
+                                               localizedName: "App 9", isRegular: true, isHidden: true,
+                                               bundlePath: nil, executablePath: nil)
+        let hiddenSnapshot = Enumerator.Snapshot(accessibilityGranted: true, runningApps: [hiddenApp],
+                                                 ownWindowTitles: [:], screenFrames: [frame], displayIDsByUUID: [:])
+        let windowFrame = CGRect(x: 0, y: 0, width: 600, height: 400)
+        Bridge.memberships = [30: [1], 31: [1], 32: [1], 33: [2], 34: [2]]
+        Bridge.orderedOut = [30, 31, 32, 33, 34]
+        Enumerator.raw = (30...34).map { id -> [String: Any] in
+            var info: [String: Any] = [kCGWindowNumber as String: NSNumber(value: id),
+                                       kCGWindowOwnerPID as String: NSNumber(value: 9),
+                                       kCGWindowLayer as String: NSNumber(value: 0),
+                                       kCGWindowBounds as String: ["X": 0, "Y": 0, "Width": 600, "Height": 400],
+                                       kCGWindowIsOnscreen as String: NSNumber(value: false),
+                                       kCGWindowAlpha as String: NSNumber(value: 1)]
+            if id != 32 { info[kCGWindowName as String] = "Window \(id)" }
+            return info
+        }
+        let hiddenHere = Enumerator.AccessibilityWindowSnapshot(
+            title: "Window 30", frame: windowFrame, isMinimized: false, isFullscreen: false, isNativeFullscreen: false)
+        Enumerator.answers = [9: .init(ordered: [(id: CGWindowID(30), snapshot: hiddenHere)], byID: [30: hiddenHere])]
+        func hiddenAppItems() -> [SwitcherItem] {
+            Preferences.standard.values = [DefaultsKey.switcherWindowlessApps: "off"]
+            return Enumerator.enumerateSwitcherWindows(groupByApp: false, preservingGroupedWindows: false,
+                                                       snapshot: hiddenSnapshot).items
+        }
+        Bridge.hiddenWithApp = [30, 33]
+        let hiddenItems = hiddenAppItems()
+        suite.expect(Set(hiddenItems.compactMap(\.windowID)) == [30, 33] && hiddenItems.allSatisfy(\.isAppHidden),
+                     "a hidden app lists the windows it hid, here and on another desktop, but none it had closed")
+        Bridge.hiddenWithApp = nil
+        suite.expect(Set(hiddenAppItems().compactMap(\.windowID)) == [30, 31, 32, 33, 34],
+                     "without the window server's answer a hidden app keeps every surface on a desktop, as before")
     }
 }

@@ -77,6 +77,15 @@ enum SpaceHopSupport {
         return windowTagsLow & ignoresCycleTag != 0
     }
 
+    /// Hiding an app tags each window it takes off screen. A window the app
+    /// had already closed keeps its desktop assignment but never gets the
+    /// tag (issues #512 and #2628). The tag only means this while the app is
+    /// hidden: a window closed in the meantime keeps it.
+    static func isHiddenWithApp(windowTags: UInt64) -> Bool {
+        let hiddenWithAppTag: UInt64 = 1 << 39
+        return windowTags & hiddenWithAppTag != 0
+    }
+
     /// How many "move a space" presses take the user from the visible Space to
     /// `target`. Positive means move right, negative means move left. Returns
     /// nil when the target is already visible, cannot be found, or sits
