@@ -1342,6 +1342,55 @@ enum AppManagementFeatureTests {
                                                             hasTitle: true),
                "without Spaces to compare, the old cautious rule stands")
 
+        func windowRole(layer: Int = 0,
+                        alpha: Double = 1,
+                        width: Double = 600,
+                        height: Double = 400,
+                        isOnScreen: Bool = true,
+                        isAppsOwnWindow: Bool = true,
+                        beforeQuit: Bool) -> AutoQuitSupport.WindowServerWindowRole {
+            AutoQuitSupport.windowServerWindowRole(layer: layer,
+                                                   alpha: alpha,
+                                                   width: width,
+                                                   height: height,
+                                                   isOnScreen: isOnScreen,
+                                                   isAppsOwnWindow: isAppsOwnWindow,
+                                                   countsEverythingShown: beforeQuit)
+        }
+        let floatingLayer = Int(CGWindowLevelForKey(.floatingWindow))
+        let modalPanelLayer = Int(CGWindowLevelForKey(.modalPanelWindow))
+        let statusLayer = Int(CGWindowLevelForKey(.statusWindow))
+        let screenSaverLayer = Int(CGWindowLevelForKey(.screenSaverWindow))
+        let shieldingLayer = Int(CGShieldingWindowLevel())
+        suite.expect(windowRole(beforeQuit: false) == .shownOnScreen
+                && windowRole(beforeQuit: true) == .shownOnScreen,
+               "a normal window on screen keeps its app running")
+        suite.expect(windowRole(isOnScreen: false, beforeQuit: false) == .normalWindowOffScreen
+                && windowRole(isOnScreen: false, beforeQuit: true) == .normalWindowOffScreen,
+               "a normal window off screen is still judged by its Space")
+        suite.expect(windowRole(layer: floatingLayer, width: 913, height: 696, beforeQuit: true) == .shownOnScreen,
+               "a screen recorder's floating control bar keeps the app running (#2941)")
+        suite.expect(windowRole(layer: modalPanelLayer, beforeQuit: true) == .shownOnScreen,
+               "a modal panel on screen keeps the app running")
+        suite.expect(windowRole(layer: screenSaverLayer, width: 1470, height: 956, beforeQuit: true) == .shownOnScreen
+                && windowRole(layer: shieldingLayer, width: 1470, height: 956, beforeQuit: true) == .shownOnScreen,
+               "a slideshow covering the screen above the menu bar keeps the app running (#1721, #2013)")
+        suite.expect(windowRole(width: 880, height: 448, isAppsOwnWindow: false, beforeQuit: true) == .shownOnScreen,
+               "an Open panel drawn by a helper for the app keeps it running (#1869)")
+        suite.expect(windowRole(layer: floatingLayer, beforeQuit: false) == .unrelated
+                && windowRole(isAppsOwnWindow: false, beforeQuit: false) == .unrelated,
+               "deciding whether an app had a window still reads only its normal windows")
+        suite.expect(windowRole(layer: floatingLayer, isOnScreen: false, beforeQuit: true) == .unrelated
+                && windowRole(isOnScreen: false, isAppsOwnWindow: false, beforeQuit: true) == .unrelated,
+               "a palette the app hid, or a helper window off screen, does not keep the app running")
+        suite.expect(windowRole(layer: statusLayer, width: 30, height: 24, beforeQuit: true) == .unrelated,
+               "a menu bar item does not keep its app running")
+        suite.expect(windowRole(layer: floatingLayer, alpha: 0, beforeQuit: true) == .unrelated
+                && windowRole(alpha: 0, beforeQuit: true) == .unrelated,
+               "a fully transparent window does not keep its app running")
+        suite.expect(windowRole(layer: Int(CGWindowLevelForKey(.desktopWindow)), beforeQuit: true) == .unrelated,
+               "a window at the desktop's level does not keep its app running")
+
         suite.expect(AutoQuitSupport.needsWindowWatchRetry(registeredWindows: 0,
                                                      listedWindows: 0,
                                                      foundUserWindow: true,
@@ -1445,6 +1494,20 @@ enum AppManagementFeatureTests {
         }
         suite.expect(missingCloseCheckOffsetCode.isEmpty,
                "AutoQuit close checks remain offsets from one origin: missing \(missingCloseCheckOffsetCode)")
+        // The check before a quit counts everything the app and the helpers
+        // drawing for it show on screen, while the refresh that makes an app
+        // eligible keeps reading normal windows only (pinned above).
+        let shownWindowCode = [
+            "if let hasWindowServerWindow = hasWindowServerUserWindow(pid: pid, countsEverythingShown: true) {",
+            "drawsForApp[ownerPID] = Self.process(ownerPID, drawsFor: pid)",
+            "guard ResponsibleProcess.owner(of: processID) == appPID else { return false }",
+            "return NSRunningApplication(processIdentifier: processID)?.activationPolicy != .regular",
+        ]
+        let missingShownWindowCode = shownWindowCode.filter {
+            autoQuitServiceCodeLines(containing: $0).isEmpty
+        }
+        suite.expect(missingShownWindowCode.isEmpty,
+               "AutoQuit's quit check counts what the app and its helpers show on screen: missing \(missingShownWindowCode)")
 
         // Attaching to a watched app must never ask its application element for
         // a role. A Chromium app (Electron, and the browsers) answers that by

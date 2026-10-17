@@ -154,6 +154,41 @@ enum AutoQuitSupport {
         bundleIDs.filter { shouldDisplayException(bundleID: $0, isInstalled: isInstalled($0)) }
     }
 
+    /// What one window the window server lists says about its app.
+    enum WindowServerWindowRole: Equatable {
+        /// On screen and visible: the app is still in use.
+        case shownOnScreen
+        /// A normal window the screen is not showing. It keeps the app only
+        /// from another Space; see `offscreenWindowKeepsAppAlive`.
+        case normalWindowOffScreen
+        /// Says nothing about the app.
+        case unrelated
+    }
+
+    /// How the window check reads one window of the app, or of a helper that
+    /// draws for it. Normal windows sit at layer 0. Before an app is asked to
+    /// quit, anything else it shows on screen counts too: a screen recorder's
+    /// control bar floating above other apps (layer 3, #2941), a slideshow that
+    /// covers the menu bar (#1721, #2013), and an Open panel, which Apple draws
+    /// in a service of its own (#1869). Only what is on screen counts there, so
+    /// a palette the app hid still lets it quit. Deciding whether an app ever
+    /// had a window keeps reading normal windows only.
+    static func windowServerWindowRole(layer: Int,
+                                       alpha: Double,
+                                       width: Double,
+                                       height: Double,
+                                       isOnScreen: Bool,
+                                       isAppsOwnWindow: Bool,
+                                       countsEverythingShown: Bool) -> WindowServerWindowRole {
+        guard alpha > 0, width >= 80, height >= 80 else { return .unrelated }
+        if isAppsOwnWindow, layer == 0 {
+            return isOnScreen ? .shownOnScreen : .normalWindowOffScreen
+        }
+        // Below layer 0 are the desktop's own levels, never an app in use.
+        guard countsEverythingShown, isOnScreen, layer >= 0 else { return .unrelated }
+        return .shownOnScreen
+    }
+
     /// Whether a window the screen is not showing still counts as a window the
     /// user has. A window parked on another Space is one swipe away, so it
     /// keeps the app running; a window the app only hid sits on the Space that

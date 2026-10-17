@@ -8,8 +8,9 @@ import Combine
 /// Quits an app when its last window closes. Each regular app gets an
 /// Accessibility observer that
 /// watches windows being created and destroyed; when an app that had at least
-/// one window drops to zero standard windows, it's asked to quit (a normal
-/// terminate, so unsaved-changes dialogs still appear).
+/// one window drops to zero standard windows and shows nothing else on screen,
+/// it's asked to quit (a normal terminate, so unsaved-changes dialogs still
+/// appear).
 ///
 /// Predictable by design: apps that launch window-less are never touched, and
 /// any app can be kept running through the exception list. Requires
@@ -541,7 +542,8 @@ final class AutoQuitService: ObservableObject {
     }
 
     /// A real, user-facing window — not a sheet, palette or system dialog, which
-    /// shouldn't keep an app "alive" for this purpose.
+    /// never makes an app eligible or gets watched. Whether one still on screen
+    /// keeps the app running is the window server check's call.
     private static func isStandardWindow(_ window: AXUIElement) -> Bool {
         if boolAttribute(window, "AXFullScreen") { return true }
         if boolAttribute(window, kAXMinimizedAttribute as String),
@@ -592,7 +594,7 @@ final class AutoQuitService: ObservableObject {
         if axWindows.contains(where: { Self.boolAttribute($0, kAXMinimizedAttribute as String) }) {
             return true
         }
-        if let hasWindowServerWindow = hasWindowServerUserWindow(pid: pid) {
+        if let hasWindowServerWindow = hasWindowServerUserWindow(pid: pid, countsEverythingShown: true) {
             return hasWindowServerWindow
         }
         return !axWindows.isEmpty
@@ -603,30 +605,46 @@ final class AutoQuitService: ObservableObject {
     /// the feature, and plenty of them do not destroy their window on close:
     /// they hide it, which leaves the app with no windows for Accessibility but
     /// a window record here. Those do not count. A window sitting on another
-    /// Space does.
-    private func hasWindowServerUserWindow(pid: pid_t) -> Bool? {
+    /// Space does. The check before a quit also counts whatever else the app
+    /// shows on screen (`countsEverythingShown`); see
+    /// `AutoQuitSupport.windowServerWindowRole`.
+    private func hasWindowServerUserWindow(pid: pid_t, countsEverythingShown: Bool = false) -> Bool? {
         guard let info = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements],
                                                     kCGNullWindowID) as? [[String: Any]] else { return nil }
 
         var visibleSpaces: Set<UInt64>?
         var askedForVisibleSpaces = false
+        // One answer per process: every window of a process shares it.
+        var drawsForApp: [pid_t: Bool] = [:]
 
         for window in info {
             guard let ownerPID = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
-                  ownerPID == pid,
+                  ownerPID == pid || countsEverythingShown,
                   let layer = (window[kCGWindowLayer as String] as? NSNumber)?.intValue,
-                  layer == 0,
-                  (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1 > 0,
                   let bounds = window[kCGWindowBounds as String] as? [String: Any],
                   let width = (bounds["Width"] as? NSNumber)?.doubleValue,
-                  let height = (bounds["Height"] as? NSNumber)?.doubleValue,
-                  width >= 80, height >= 80 else { continue }
+                  let height = (bounds["Height"] as? NSNumber)?.doubleValue else { continue }
             let isOnScreen = (window[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue
                 ?? (window[kCGWindowIsOnscreen as String] as? Bool)
                 ?? false
-            if isOnScreen { return true }
-
-            guard let windowID = (window[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
+            let role = AutoQuitSupport.windowServerWindowRole(
+                layer: layer,
+                alpha: (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1,
+                width: width,
+                height: height,
+                isOnScreen: isOnScreen,
+                isAppsOwnWindow: ownerPID == pid,
+                countsEverythingShown: countsEverythingShown)
+            if role == .shownOnScreen {
+                if ownerPID == pid { return true }
+                if drawsForApp[ownerPID] == nil {
+                    drawsForApp[ownerPID] = Self.process(ownerPID, drawsFor: pid)
+                }
+                if drawsForApp[ownerPID] == true { return true }
+                continue
+            }
+            guard role == .normalWindowOffScreen,
+                  let windowID = (window[kCGWindowNumber as String] as? NSNumber)?.uint32Value else { continue }
             // Asked once per check, and only when there is an off-screen window
             // to judge: the common case never pays for it.
             if !askedForVisibleSpaces {
@@ -642,6 +660,18 @@ final class AutoQuitService: ObservableObject {
             }
         }
         return false
+    }
+
+    /// Whether another process's window is this app's own interface drawn
+    /// elsewhere. Since macOS 10.15 every Open and Save panel is drawn in a
+    /// service the system starts for the app that asked, and AutoFill and
+    /// Quick Look work the same way; the system records that app as
+    /// responsible for the service. A regular app never counts, even one this
+    /// app started: a simulator opened from its IDE or a program run from a
+    /// terminal is an app of its own.
+    private static func process(_ processID: pid_t, drawsFor appPID: pid_t) -> Bool {
+        guard ResponsibleProcess.owner(of: processID) == appPID else { return false }
+        return NSRunningApplication(processIdentifier: processID)?.activationPolicy != .regular
     }
 
     // MARK: - Close-request monitor
